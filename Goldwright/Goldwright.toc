@@ -1,0 +1,24 @@
+## Interface: 16001
+## Title: Goldwright
+## Notes: Auction house prices for WoW Forever. Alpha build.
+## Author: Goldwright
+## Version: 0.1.0-alpha
+## SavedVariables: GoldwrightDB, GoldwrightScans
+## IconTexture: Interface\Icons\INV_Misc_Coin_02
+## AddonCompartmentFunc: Goldwright_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: Goldwright_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: Goldwright_OnAddonCompartmentLeave
+## X-Curse-Project-ID: 1796909
+
+Core.lua
+Pricing.lua
+Selling.lua
+Tooltip.lua
+SellCharts.lua
+SellPanel.lua
+CancelPanel.lua
+Scan.lua
+Shopping.lua
+Settings.lua
+Launcher.lua
+Onboarding.lua

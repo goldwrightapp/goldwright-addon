@@ -1,0 +1,119 @@
+name: Bug report
+description: Something in Goldwright doesn't work, shows a wrong price or causes a Lua error.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more of this you fill in, the faster it gets fixed.
+        Please check the [open issues](https://github.com/goldwrightapp/goldwright-addon/issues) first, in case it's already reported.
+
+  - type: input
+    id: version
+    attributes:
+      label: Goldwright version
+      description: Shown in your add-on manager (CurseForge app, WowUp) and in the in-game AddOns list.
+      placeholder: "0.1.0-alpha"
+    validations:
+      required: true
+
+  - type: textarea
+    id: status
+    attributes:
+      label: What `/gw status` prints
+      description: |
+        Type `/gw status` in chat and copy the lines here. They show your region, ruleset, faction
+        (auction house), realm and the Goldwright Data pack version.
+        If you can't run it, write your region (US, EU, KR, TW), ruleset (Normal, PvP, Roleplay, Roleplay PvP)
+        and auction house (Alliance, Horde or Blackwater) instead.
+      placeholder: |
+        Goldwright: US · Normal · Alliance (realm "...").
+        Goldwright: Data pack US_Normal 2026.11.10.0545: snapshot 2 h ago, built 1 h ago.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: data-version
+    attributes:
+      label: Goldwright Data version
+      description: From your add-on manager, if `/gw status` didn't show one (e.g. "No data pack").
+      placeholder: "2026.11.10.0545"
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      multiple: true
+      options:
+        - Item tooltip
+        - Auction house window
+        - Sell panel / posting
+        - My auctions / cancelling
+        - Scan
+        - Shopping lists / buying
+        - Settings, minimap button or welcome screen
+        - Chat commands (/gw)
+        - Logging in / loading
+        - Somewhere else
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, step by step?
+      placeholder: |
+        1. Open the auction house
+        2. Click the Sell tab
+        3. Pick "Linen Cloth" from the bags
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: For a wrong price, please say which price and what you think it should be.
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot
+      description: Drag an image in here. A screenshot of the tooltip or window says more than a description.
+
+  - type: textarea
+    id: lua-error
+    attributes:
+      label: Lua error text
+      description: |
+        If the game showed a Lua error, copy the whole text, including the stack lines.
+        No error window? Type `/console scriptErrors 1` in chat, then do the steps again.
+        BugSack / BugGrabber also collect errors if you use them.
+      render: text
+
+  - type: markdown
+    attributes:
+      value: |
+        **Goldwright's log:** Goldwright keeps a short log of what it asked the auction house.
+        The game saves it when you type `/reload` (or log out) to
+        `World of Warcraft\_forever_\WTF\Account\<ACCOUNT>\SavedVariables\Goldwright.lua`.
+        If we ask for it, `/reload` right after the bug happens and attach that file.
+        It holds your Goldwright settings, shopping lists and scan data, but no passwords.
+
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else?
+      description: Other add-ons you use that touch the auction house or tooltips (Auctionator, TSM, ...), or anything else that might help.

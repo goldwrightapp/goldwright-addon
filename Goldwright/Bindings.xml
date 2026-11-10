@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="GOLDWRIGHT_POST" header="GOLDWRIGHT" category="ADDONS">Goldwright.PostSelected()</Binding>
+  <Binding name="GOLDWRIGHT_CANCEL_NEXT" category="ADDONS">Goldwright.CancelNextUndercut()</Binding>
+  <Binding name="GOLDWRIGHT_TOGGLE" category="ADDONS">Goldwright.ToggleSellPanel()</Binding>
+</Bindings>

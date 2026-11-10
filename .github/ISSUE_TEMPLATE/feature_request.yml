@@ -1,0 +1,41 @@
+name: Feature request
+description: An idea for something Goldwright could do, or do better.
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please check the [open issues](https://github.com/goldwrightapp/goldwright-addon/issues) first; if it's already there, a 👍 on it helps us see what players want most.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation in the game, and what's hard or slow about it today.
+      placeholder: "When I sell herbs, I want to know ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: How you imagine Goldwright doing it. Sketches and screenshots of other add-ons are welcome.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Goldwright?
+      multiple: true
+      options:
+        - Item tooltip
+        - Prices and price data
+        - Sell panel / posting
+        - My auctions / cancelling
+        - Scan
+        - Shopping lists / buying
+        - Settings
+        - Something new

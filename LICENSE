@@ -1,0 +1,32 @@
+Copyright (c) 2026 Goldwright. All rights reserved.
+
+The Goldwright add-on and everything in this repository ("the Software") are published so that
+players can read the source code and report problems. Publishing the source does not grant a
+license to it, except as stated below.
+
+You may:
+
+  - download and install the Software for your own use in World of Warcraft, including through
+    an add-on manager such as the CurseForge app or WowUp;
+  - read and study the source code;
+  - change your own installed copy for your own use, without sharing the changed copy.
+
+You may not, without written permission from Goldwright:
+
+  - copy, publish, redistribute, mirror or re-upload the Software or any part of it, changed or
+    unchanged, including on add-on sites;
+  - use the Software's code, or any part of it, in another add-on, program or service;
+  - sell the Software or any part of it, or offer it as part of a paid product or service.
+
+To ask for permission, open an issue in this repository or use the contact details on
+https://goldwright.app.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+World of Warcraft and Warcraft are trademarks or registered trademarks of Blizzard Entertainment,
+Inc. Goldwright is an independent project, not affiliated with or endorsed by Blizzard
+Entertainment.
