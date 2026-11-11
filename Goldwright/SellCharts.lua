@@ -1,37 +1,73 @@
--- The two charts in the Sell panel's middle column (SELL-15, SELL-16), drawn with the UI's own
--- primitives: Line objects for price lines (a bar or dot fallback where CreateLine is missing) and
--- Textures for bars and reference lines. Everything is drawn once per selected item (or toggle /
--- settings change) from pooled objects: no OnUpdate, no work while idle. The numbers come from
--- Selling.lua (GW.HistoryWindow, GW.BestPostWindow, ...), so they're tested without the UI.
+--- The Sell panel's two charts (SELL-15 price history, SELL-16 best time to post): Line objects for
+--- price lines (bars or dots where CreateLine is missing), Textures for bars and reference lines.
+--- Drawn once per selected item (or toggle / settings change) from pooled objects: no OnUpdate, no
+--- work while idle. The numbers come from Selling.lua (GW.HistoryWindow, ...), tested without the UI.
 local _, GW = ...
 
-local CW, PH = 182, 80          -- chart width, plot height
-local GAP = 16                  -- between the two charts
-local TOP = -286                -- header row in col2
-local PLOT_Y = TOP - 18         -- plot top
-local LABEL_PAD = 13            -- room for the small labels inside the plot
+local CW, PH = 182, 80 -- chart width, plot height
+local GAP = 16 -- between the two charts
+local TOP = -286 -- header row in col2
+local PLOT_Y = TOP - 18 -- plot top
+local LABEL_PAD = 13 -- room for the small labels inside the plot
 local HISTORY_SINCE = "since Nov 9" -- the pipeline's first day of history
 local MONTHS = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" }
-local GREY = { 0.70, 0.70, 0.72 }
+local UI = GW.UI
+local GREY = UI.GREY
 
+--- One chart: its frames and the pools of lines and textures it draws with.
+---@class GoldwrightChart
+---@field lines table[] pooled Line objects
+---@field texs table[] pooled textures
+---@field nLines number lines used in the current drawing
+---@field nTexs number textures used in the current drawing
+---@field header table title font string
+---@field plot table plot frame
+---@field msg table message shown instead of the plot
+---@field below table legend / callout under the x labels
+---@field useLines boolean the client can create Line objects
+---@field extras table[]|nil frames outside the plot shown and hidden with it
+---@field days number|nil history: days shown (7 or 30)
+---@field hi table|nil history: top price label
+---@field lo table|nil history: bottom price label
+---@field xFirst table|nil history: first day label
+---@field xLast table|nil history: last day label
+---@field toggles table[]|nil history: the 7d / 30d buttons
+---@field units table|nil hours: "up to n listed" label
+---@field price table|nil hours: price range label
+---@field window GoldwrightPostWindow|nil hours: the window drawn last (for tests)
+
+--- The Sell panel charts (GW.SellCharts).
+---@class GoldwrightSellCharts
+---@field history GoldwrightChart|nil
+---@field hours GoldwrightChart|nil
 local Charts = {}
 GW.SellCharts = Charts
 local hist, hrs -- the two chart objects
-local current   -- item id drawn last
+local current -- item id drawn last
 
+--- A colour escape ("|cffrrggbb") for an {r, g, b} colour.
+---@param c number[]
+---@return string
 local function hex(c)
   local function b(v) return math.floor(v * 255 + 0.5) end
   return string.format("|cff%02x%02x%02x", b(c[1]), b(c[2]), b(c[3]))
 end
 
+--- A chart label font string, drawn above the plot textures (OVERLAY).
+---@param parent table
+---@param template string? font object (default "GameFontDisableSmall")
+---@param justify string?
+---@return table fontString
 local function fs(parent, template, justify)
-  local f = parent:CreateFontString(nil, "OVERLAY", template or "GameFontDisableSmall")
-  if justify then f:SetJustifyH(justify) end
-  return f
+  return UI.FontString(parent, template or "GameFontDisableSmall", justify, "OVERLAY")
 end
 
-local function side() return (GW.house or GW.DetectHouse()).side end
+--- The house being sold at: the open auction house (Blackwater in neutral towns).
+local function side() return GW.AuctionSide and GW.AuctionSide() or GW.House().side end
 
+--- "Nov 9" for a server time (UTC date).
+---@param epoch number
+---@return string
 local function dayLabel(epoch)
   local t = date("!*t", epoch)
   return MONTHS[t.month] .. " " .. t.day
@@ -40,6 +76,12 @@ end
 ---------------------------------------------------------------------------
 -- drawing primitives (pooled)
 ---------------------------------------------------------------------------
+
+--- Creates a chart: header, plot frame with background and base line, message and callout.
+---@param parent table the Sell panel's middle column
+---@param x number left offset in `parent`
+---@param title string chart heading
+---@return GoldwrightChart
 local function newChart(parent, x, title)
   local c = { lines = {}, texs = {}, nLines = 0, nTexs = 0 }
   c.header = fs(parent, "GameFontNormal", "LEFT")
@@ -52,7 +94,9 @@ local function newChart(parent, x, title)
   bg:SetAllPoints()
   bg:SetColorTexture(1, 1, 1, 0.03)
   local base = c.plot:CreateTexture(nil, "BORDER")
-  base:SetPoint("BOTTOMLEFT"); base:SetPoint("BOTTOMRIGHT"); base:SetHeight(1)
+  base:SetPoint("BOTTOMLEFT")
+  base:SetPoint("BOTTOMRIGHT")
+  base:SetHeight(1)
   base:SetColorTexture(1, 1, 1, 0.15)
   c.msg = fs(parent, "GameFontDisableSmall", "LEFT")
   c.msg:SetPoint("TOPLEFT", x, PLOT_Y - 2)
@@ -70,15 +114,33 @@ local function newChart(parent, x, title)
   return c
 end
 
+--- Starts a drawing: every pooled object is free again.
+---@param c GoldwrightChart
 local function begin(c)
   c.nLines, c.nTexs = 0, 0
 end
 
+--- Ends a drawing: hides the pooled objects it didn't use.
+---@param c GoldwrightChart
 local function finish(c)
-  for i = c.nLines + 1, #c.lines do c.lines[i]:Hide() end
-  for i = c.nTexs + 1, #c.texs do c.texs[i]:Hide() end
+  for i = c.nLines + 1, #c.lines do
+    c.lines[i]:Hide()
+  end
+  for i = c.nTexs + 1, #c.texs do
+    c.texs[i]:Hide()
+  end
 end
 
+--- Draws a filled rectangle from the texture pool (at least 1 x 1 pixel).
+---@param c GoldwrightChart
+---@param x number left, from the plot's bottom-left
+---@param y number bottom, from the plot's bottom-left
+---@param w number width
+---@param h number height
+---@param color number[] {r, g, b}
+---@param alpha number? default 1
+---@param layer string? draw layer (default "ARTWORK")
+---@return table texture
 local function rect(c, x, y, w, h, color, alpha, layer)
   c.nTexs = c.nTexs + 1
   local t = c.texs[c.nTexs]
@@ -95,6 +157,15 @@ local function rect(c, x, y, w, h, color, alpha, layer)
   return t
 end
 
+--- Draws a line segment from the line pool (only when the client has Line objects).
+---@param c GoldwrightChart
+---@param x1 number
+---@param y1 number
+---@param x2 number
+---@param y2 number
+---@param color number[] {r, g, b}
+---@param thickness number? default 2
+---@return table line
 local function segment(c, x1, y1, x2, y2, color, thickness)
   c.nLines = c.nLines + 1
   local l = c.lines[c.nLines]
@@ -110,8 +181,12 @@ local function segment(c, x1, y1, x2, y2, color, thickness)
   return l
 end
 
--- A price line through points { x, y } (nil y = gap). Lines where the client has them, dots
--- otherwise; single points between gaps get a dot either way.
+--- Draws a price line through points: lines where the client has them, dots otherwise; single
+--- points between gaps get a dot either way.
+---@param c GoldwrightChart
+---@param pts { x: number, y: number? }[] points (nil y = gap)
+---@param color number[] {r, g, b}
+---@param dots boolean|nil also draw a dot on every point
 local function polyline(c, pts, color, dots)
   for i = 1, #pts do -- every entry is a table, so # is safe here
     local p, prev, nxt = pts[i], pts[i - 1], pts[i + 1]
@@ -123,7 +198,13 @@ local function polyline(c, pts, color, dots)
   end
 end
 
--- Lowest and highest of values[1..n] (nil = gap) and `extra`.
+--- Lowest and highest of values[1..n] (nil = gap) and `extra`. A flat range is widened a little
+--- so it can be drawn.
+---@param values table<number, number>
+---@param n number entries to look at
+---@param extra number|nil one more value to include
+---@return number|nil lo nil when every value is missing
+---@return number|nil hi
 local function range(values, n, extra)
   local lo, hi
   for i = 1, n + 1 do
@@ -135,20 +216,32 @@ local function range(values, n, extra)
     end
   end
   if not lo then return nil end
-  if hi == lo then lo, hi = math.max(0, lo * 0.95 - 1), hi * 1.05 + 1 end
+  if hi == lo then
+    lo, hi = math.max(0, lo * 0.95 - 1), hi * 1.05 + 1
+  end
   return lo, hi
 end
 
+--- Shows the plot (and its extras), or hides it and shows a message instead.
+---@param c GoldwrightChart
+---@param shown boolean
+---@param msg string|nil message when hidden
 local function showChart(c, shown, msg)
   c.plot:SetShown(shown)
   c.msg:SetShown(not shown)
   c.msg:SetText(msg or "")
-  for _, f in ipairs(c.extras or {}) do f:SetShown(shown) end
+  for _, f in ipairs(c.extras or {}) do
+    f:SetShown(shown)
+  end
 end
 
 ---------------------------------------------------------------------------
 -- SELL-15: price history
 ---------------------------------------------------------------------------
+
+--- Draws the price history chart for an item: daily prices over 7 or 30 days against the 30-day
+--- average, or a message while there is too little history.
+---@param itemID number
 local function drawHistory(itemID)
   local c = hist
   begin(c)
@@ -159,9 +252,13 @@ local function drawHistory(itemID)
     showChart(c, false, "Price history comes with the Goldwright Data pack.")
   elseif not w or w.total < GW.HISTORY_MIN_DAYS then
     local have = w and w.total or 0
-    showChart(c, false, have > 0
-      and string.format("Building history (%s): %d of %d days so far.", HISTORY_SINCE, have, GW.HISTORY_MIN_DAYS)
-      or string.format("Building history (%s).", HISTORY_SINCE))
+    showChart(
+      c,
+      false,
+      have > 0
+          and string.format("Building history (%s): %d of %d days so far.", HISTORY_SINCE, have, GW.HISTORY_MIN_DAYS)
+        or string.format("Building history (%s).", HISTORY_SINCE)
+    )
   else
     showChart(c, true)
     local d = GW.ItemData(itemID)
@@ -185,13 +282,18 @@ local function drawHistory(itemID)
         if v then rect(c, (i - 1) * bw + 0.5, 0, bw - 1, y(v), GW.GOLD, 0.85) end
       end
     end
-    c.hi:SetText(GW.Money(hi)); c.lo:SetText(GW.Money(lo))
+    c.hi:SetText(GW.Money(hi))
+    c.lo:SetText(GW.Money(lo))
     c.xFirst:SetText(dayLabel(w.firstDay))
     c.xLast:SetText(dayLabel(w.firstDay + (n - 1) * 86400))
     c.below:SetText(string.format("%s—|r 30-day average %s", hex(GW.SIGNAL_ORANGE), GW.Money(avg)))
   end
   for _, b in ipairs(c.toggles) do
-    if b.days == c.days then b:LockHighlight() else b:UnlockHighlight() end
+    if b.days == c.days then
+      b:LockHighlight()
+    else
+      b:UnlockHighlight()
+    end
   end
   finish(c)
 end
@@ -199,15 +301,23 @@ end
 ---------------------------------------------------------------------------
 -- SELL-16: hour of day (local time) + best time to post
 ---------------------------------------------------------------------------
+
+--- Draws the hour-of-day chart for an item in local time: units listed per hour as bars (the best
+--- posting window highlighted), the price as a line, and the best-time callout.
+---@param itemID number
 local function drawHours(itemID)
   local c = hrs
   begin(c)
   local profile = GW.Hours(itemID, side())
   local offset = math.floor(GW.UTCOffsetHours() + 0.5)
   local units, prices
-  if profile then units, prices = GW.LocalHours(profile, offset) end
+  if profile then
+    units, prices = GW.LocalHours(profile, offset)
+  end
   local maxU = 0
-  for h = 1, 24 do if units and units[h] and units[h] > maxU then maxU = units[h] end end
+  for h = 1, 24 do
+    if units and units[h] and units[h] > maxU then maxU = units[h] end
+  end
   if not GW.Pack() then
     showChart(c, false, "The hourly pattern comes with the Goldwright Data pack.")
   elseif not profile or maxU == 0 then
@@ -236,10 +346,13 @@ local function drawHours(itemID)
     else
       c.price:SetText("")
     end
-    c.units:SetText(string.format("up to %s listed", BreakUpLargeNumbers and BreakUpLargeNumbers(math.floor(maxU + 0.5)) or math.floor(maxU + 0.5)))
+    c.units:SetText(string.format("up to %s listed", GW.Number(math.floor(maxU + 0.5))))
     c.below:SetText(GW.BestPostText(win) or "")
-    if win and not win.flat then c.below:SetTextColor(GW.SIGNAL_BLUE[1], GW.SIGNAL_BLUE[2], GW.SIGNAL_BLUE[3])
-    else c.below:SetTextColor(GREY[1], GREY[2], GREY[3]) end
+    if win and not win.flat then
+      UI.SetColor(c.below, GW.SIGNAL_BLUE)
+    else
+      UI.SetColor(c.below, GREY)
+    end
     c.window = win
   end
   finish(c)
@@ -248,13 +361,21 @@ end
 ---------------------------------------------------------------------------
 -- construction and API
 ---------------------------------------------------------------------------
+
+--- Builds both charts in the Sell panel's middle column, side by side: price history (with 7d /
+--- 30d toggles) and best time to post (with hour labels in the player's time).
+---@param col2 table the middle column frame
 function Charts.Create(col2)
   hist = newChart(col2, 0, "Price history")
   hist.days = 7
-  hist.hi = fs(hist.plot, "GameFontDisableSmall", "LEFT"); hist.hi:SetPoint("TOPLEFT", 2, -1)
-  hist.lo = fs(hist.plot, "GameFontDisableSmall", "LEFT"); hist.lo:SetPoint("BOTTOMLEFT", 2, 2)
-  hist.xFirst = fs(col2, "GameFontDisableSmall", "LEFT"); hist.xFirst:SetPoint("TOPLEFT", 0, PLOT_Y - PH - 3)
-  hist.xLast = fs(col2, "GameFontDisableSmall", "RIGHT"); hist.xLast:SetPoint("TOPRIGHT", col2, "TOPLEFT", CW, PLOT_Y - PH - 3)
+  hist.hi = fs(hist.plot, "GameFontDisableSmall", "LEFT")
+  hist.hi:SetPoint("TOPLEFT", 2, -1)
+  hist.lo = fs(hist.plot, "GameFontDisableSmall", "LEFT")
+  hist.lo:SetPoint("BOTTOMLEFT", 2, 2)
+  hist.xFirst = fs(col2, "GameFontDisableSmall", "LEFT")
+  hist.xFirst:SetPoint("TOPLEFT", 0, PLOT_Y - PH - 3)
+  hist.xLast = fs(col2, "GameFontDisableSmall", "RIGHT")
+  hist.xLast:SetPoint("TOPRIGHT", col2, "TOPLEFT", CW, PLOT_Y - PH - 3)
   hist.extras = { hist.xFirst, hist.xLast, hist.below }
   hist.toggles = {}
   for i, days in ipairs({ 7, 30 }) do
@@ -274,10 +395,13 @@ function Charts.Create(col2)
 
   local x2 = CW + GAP
   hrs = newChart(col2, x2, "Best time to post")
-  local tz = fs(col2, "GameFontDisableSmall", "RIGHT"); tz:SetPoint("TOPRIGHT", col2, "TOPLEFT", x2 + CW, TOP - 1)
+  local tz = fs(col2, "GameFontDisableSmall", "RIGHT")
+  tz:SetPoint("TOPRIGHT", col2, "TOPLEFT", x2 + CW, TOP - 1)
   tz:SetText("your time")
-  hrs.units = fs(hrs.plot, "GameFontDisableSmall", "LEFT"); hrs.units:SetPoint("TOPLEFT", 2, -1)
-  hrs.price = fs(hrs.plot, "GameFontDisableSmall", "RIGHT"); hrs.price:SetPoint("TOPRIGHT", -2, -1)
+  hrs.units = fs(hrs.plot, "GameFontDisableSmall", "LEFT")
+  hrs.units:SetPoint("TOPLEFT", 2, -1)
+  hrs.price = fs(hrs.plot, "GameFontDisableSmall", "RIGHT")
+  hrs.price:SetPoint("TOPRIGHT", -2, -1)
   hrs.extras = { hrs.below }
   for i, h in ipairs({ 0, 6, 12, 18 }) do
     local l = fs(col2, "GameFontDisableSmall", "LEFT")
@@ -289,7 +413,8 @@ function Charts.Create(col2)
   Charts.history, Charts.hours = hist, hrs
 end
 
--- Redraw both charts for an item (nil clears the remembered item).
+--- Redraws both charts for an item. Does nothing before Charts.Create.
+---@param itemID number|nil item id (nil clears the remembered item)
 function Charts.Render(itemID)
   current = itemID
   if not (hist and itemID) then return end

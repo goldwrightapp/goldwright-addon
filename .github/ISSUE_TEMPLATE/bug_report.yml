@@ -1,20 +1,30 @@
 name: Bug report
 description: Something in Goldwright doesn't work, shows a wrong price or causes a Lua error.
-title: "[Bug] "
-labels: ["bug"]
+title: '[Bug] '
+labels: ['bug']
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for reporting! The more of this you fill in, the faster it gets fixed.
+
+        **Fastest:** type `/gw bug` in game, press Ctrl+C, and paste the report into the box below. It has your
+        versions, region, ruleset, settings and Goldwright's recent log.
         Please check the [open issues](https://github.com/goldwrightapp/goldwright-addon/issues) first, in case it's already reported.
+
+  - type: textarea
+    id: report
+    attributes:
+      label: What `/gw bug` gives you
+      description: Type `/gw bug` in game, press Ctrl+C in the window that opens, and paste it here.
+      render: markdown
 
   - type: input
     id: version
     attributes:
       label: Goldwright version
       description: Shown in your add-on manager (CurseForge app, WowUp) and in the in-game AddOns list.
-      placeholder: "0.1.0-alpha"
+      placeholder: '0.1.0-alpha'
     validations:
       required: true
 
@@ -39,7 +49,7 @@ body:
     attributes:
       label: Goldwright Data version
       description: From your add-on manager, if `/gw status` didn't show one (e.g. "No data pack").
-      placeholder: "2026.11.10.0545"
+      placeholder: '2026.11.10.0545'
 
   - type: dropdown
     id: where
@@ -53,6 +63,9 @@ body:
         - My auctions / cancelling
         - Scan
         - Shopping lists / buying
+        - Crafting panel
+        - Blackwater auction house (Booty Bay, Gadgetzan, Everlook)
+        - goldwright.app website
         - Settings, minimap button or welcome screen
         - Chat commands (/gw)
         - Logging in / loading
@@ -91,7 +104,9 @@ body:
     id: screenshot
     attributes:
       label: Screenshot
-      description: Drag an image in here. A screenshot of the tooltip or window says more than a description.
+      description: |
+        Drag an image in here. A screenshot of the tooltip or window says more than a description.
+        In game, press **Print Screen**: WoW saves it in the `Screenshots` folder next to `Interface` (`World of Warcraft/_forever_/Screenshots`).
 
   - type: textarea
     id: lua-error

@@ -1,22 +1,18 @@
--- Settings (requirements SET): a page in the game's Options > AddOns > Goldwright, also reached
--- with /gw config, the launcher and the panel's Settings button. Built from plain UI templates
--- (check buttons, buttons, edit boxes) so it doesn't depend on the newer settings widgets.
--- Every change applies at once (GW.SetOpt -> GW.ApplyOptions), no /reload.
+--- Settings page (SET) in the game's Options > AddOns > Goldwright, also opened by /gw config, the
+--- launcher and the panel's Settings button. Built from plain UI templates (check buttons, buttons,
+--- edit boxes), not the newer settings widgets. Every change applies at once (GW.SetOpt ->
+--- GW.ApplyOptions), without /reload.
 local _, GW = ...
 
 local frame = CreateFrame("Frame", "GoldwrightSettingsFrame")
 frame.name = "Goldwright"
-local category
-local controls = {}
+local category -- the Settings category (newer clients only)
+local controls = {} -- refresh functions, one per control: each sets the control from the saved options
 local built = false
 
-local GREY = { 0.70, 0.70, 0.72 }
-
-local function fs(parent, template, justify)
-  local f = parent:CreateFontString(nil, "ARTWORK", template or "GameFontHighlight")
-  if justify then f:SetJustifyH(justify) end
-  return f
-end
+local UI = GW.UI
+local fs, setColor = UI.FontString, UI.SetColor
+local GREY = UI.GREY
 
 ---------------------------------------------------------------------------
 -- widgets: each registers a refresh function in `controls`
@@ -24,6 +20,8 @@ end
 local Y -- cursor while building
 local content
 
+--- A section heading at the cursor.
+---@param text string
 local function heading(text)
   Y = Y - 14
   local h = fs(content, "GameFontNormal", "LEFT")
@@ -32,6 +30,10 @@ local function heading(text)
   Y = Y - 22
 end
 
+--- A small grey note at the cursor (two lines of space when it wraps).
+---@param text string
+---@param x? number left offset (default 40)
+---@return table fontString
 local function note(text, x)
   local f = fs(content, "GameFontDisableSmall", "LEFT")
   f:SetPoint("TOPLEFT", x or 40, Y + 4)
@@ -41,6 +43,11 @@ local function note(text, x)
   return f
 end
 
+--- A check button bound to a boolean option.
+---@param label string
+---@param key string option key (GW.Opt / GW.SetOpt)
+---@param tip? string tooltip text
+---@return table checkButton
 local function check(label, key, tip)
   local cb = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
   cb:SetSize(24, 24)
@@ -65,7 +72,12 @@ local function check(label, key, tip)
   return cb
 end
 
--- A row of buttons acting as radio buttons.
+--- A row of buttons acting as radio buttons for one option; the button of the current value stays
+--- highlighted.
+---@param label string
+---@param key string option key
+---@param options table[] { value, buttonText } pairs
+---@param onChange? fun(value: any) called after the option is set
 local function choice(label, key, options, onChange)
   local l = fs(content, "GameFontHighlight", "LEFT")
   l:SetPoint("TOPLEFT", 20, Y - 4)
@@ -86,13 +98,24 @@ local function choice(label, key, options, onChange)
   end
   table.insert(controls, function()
     for _, x2 in ipairs(buttons) do
-      if GW.Opt(key) == x2.value then x2.b:LockHighlight() else x2.b:UnlockHighlight() end
+      if GW.Opt(key) == x2.value then
+        x2.b:LockHighlight()
+      else
+        x2.b:UnlockHighlight()
+      end
     end
   end)
   Y = Y - 28
 end
 
--- A whole-number box with a unit after it.
+--- A whole-number box (up to 3 digits) with a unit after it. Enter or leaving the box saves the
+--- value clamped to min..max; Escape restores the saved value.
+---@param label string
+---@param key string option key
+---@param min number
+---@param max number
+---@param unit? string text after the box
+---@param tip? string grey hint after the unit
 local function number(label, key, min, max, unit, tip)
   local l = fs(content, "GameFontHighlight", "LEFT")
   l:SetPoint("TOPLEFT", 20, Y - 4)
@@ -114,28 +137,39 @@ local function number(label, key, min, max, unit, tip)
   end
   box:SetScript("OnEnterPressed", commit)
   box:SetScript("OnEditFocusLost", commit)
-  box:SetScript("OnEscapePressed", function(self) self:SetText(tostring(GW.Opt(key))); self:ClearFocus() end)
+  box:SetScript("OnEscapePressed", function(self)
+    self:SetText(tostring(GW.Opt(key)))
+    self:ClearFocus()
+  end)
   if tip then
     local t = fs(content, "GameFontDisableSmall", "LEFT")
     t:SetPoint("LEFT", u, "RIGHT", 10, 0)
     t:SetText(tip)
   end
-  table.insert(controls, function() if not box:HasFocus() then box:SetText(tostring(GW.Opt(key))) end end)
+  table.insert(controls, function()
+    if not box:HasFocus() then box:SetText(tostring(GW.Opt(key))) end
+  end)
   Y = Y - 28
 end
 
+--- A button at the cursor (the caller moves the cursor).
+---@param label string
+---@param x? number left offset (default 20)
+---@param width? number (default 140)
+---@param onClick function
+---@return table button
 local function button(label, x, width, onClick)
-  local b = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
-  b:SetSize(width or 140, 22)
+  local b = UI.Button(content, label, width or 140, 22, onClick)
   b:SetPoint("TOPLEFT", x or 20, Y)
-  b:SetText(label)
-  b:SetScript("OnClick", onClick)
   return b
 end
 
+--- Sets every control from the saved options (once the page is built).
 local function refresh()
   if not built then return end
-  for _, fn in ipairs(controls) do fn() end
+  for _, fn in ipairs(controls) do
+    fn()
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -154,18 +188,17 @@ StaticPopupDialogs.GOLDWRIGHT_RESET = {
   hideOnEscape = true,
 }
 
+--- Builds the page on first show: a scroll frame with every section, top to bottom.
 local function build()
   built = true
-  -- Blizzard's Options window is see-through (~70% in Forever); a dark layer behind our page keeps
-  -- a little of that but makes the text readable over a busy world (Mischa, 2026-11-10).
+  -- Blizzard's Options window is see-through (about 70% in Forever). A dark layer behind the page
+  -- keeps a little of that but makes the text readable over a busy world (decided 2026-11-10).
   local shade = frame:CreateTexture(nil, "BACKGROUND")
   shade:SetAllPoints()
   shade:SetColorTexture(0.03, 0.03, 0.04, 0.6)
   local scroll
   local ok = pcall(function() scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate") end)
-  if not ok or not scroll then
-    scroll = CreateFrame("ScrollFrame", nil, frame, "ScrollFrameTemplate")
-  end
+  if not ok or not scroll then scroll = CreateFrame("ScrollFrame", nil, frame, "ScrollFrameTemplate") end
   scroll:SetPoint("TOPLEFT", 0, -8)
   scroll:SetPoint("BOTTOMRIGHT", -28, 8)
   content = CreateFrame("Frame", nil, scroll)
@@ -184,13 +217,21 @@ local function build()
   heading("Tooltip")
   check("Market value", "ttMarket", "Depth-based market value at your auction house.")
   check("Now (cheapest real listing)", "ttNow", "The cheapest listing after skipping likely bait.")
-  check("Normal price and buy / sell signal", "ttNormal", "The 7-day normal price, and a line when the cheapest listing is well above or below it.")
+  check(
+    "Normal price and buy / sell signal",
+    "ttNormal",
+    "The 7-day normal price, and a line when the cheapest listing is well above or below it."
+  )
   check("Trend and sell rate", "ttTrend", "7-day trend against 30 days, and estimated units sold per day.")
   check("Other houses", "ttOthers")
   check("Blackwater pays more", "ttBetter", "Only shown with real depth and proven buyers at the other house.")
   check("Vendor comparison", "ttVendor")
-  check("\"No auction data yet\" for unknown items", "ttNoData")
-  choice("Expanded view key", "expandKey", { { "SHIFT", "Shift" }, { "CTRL", "Ctrl" }, { "ALT", "Alt" }, { "NONE", "None" } })
+  check('"No auction data yet" for unknown items', "ttNoData")
+  choice(
+    "Expanded view key",
+    "expandKey",
+    { { "SHIFT", "Shift" }, { "CTRL", "Ctrl" }, { "ALT", "Alt" }, { "NONE", "None" } }
+  )
   choice("Money", "money", { { "coins", "Coin Icons" }, { "letters", "1g 23s 47c" } })
 
   heading("Signals")
@@ -204,53 +245,93 @@ local function build()
   number("Note when above", "abovePct", 101, 999, "% of normal", "default 150")
   choice("Default duration", "duration", { { 3, "24 Hours" }, { 2, "8 Hours" }, { 1, "2 Hours" } })
   check("Open Goldwright with the auction house", "autoShow")
-  note("Key bindings for Post, Cancel next undercut and opening Goldwright: Options › Keybindings › AddOns › Goldwright.", 20)
+  note(
+    "Key bindings for Post, Cancel next undercut and opening Goldwright: Options › Keybindings › AddOns › Goldwright.",
+    20
+  )
 
   heading("Bait detection")
-  check("Skip thin cheap listings when pricing", "bait", "Sellers price against the first real listing; buyers see bait as a deal.")
+  check(
+    "Skip thin cheap listings when pricing",
+    "bait",
+    "Sellers price against the first real listing; buyers see bait as a deal."
+  )
   number("Thin = at most", "baitShare", 1, 20, "% of units listed", "default 1")
   number("...and more than", "baitGap", 5, 90, "% below the 5% depth price", "default 30")
   note("Applies to live listings in game. Data pack prices use the server's fixed rule (1%, 30%).", 20)
 
   heading("Launcher")
   local mm = check("Minimap button", "minimap", "Also in the add-on menu next to the minimap, when the game has one.")
-  mm:SetScript("OnClick", function(self) if GW.SetMinimapShown then GW.SetMinimapShown(self:GetChecked() and true or false) end end)
+  mm:SetScript("OnClick", function(self)
+    if GW.SetMinimapShown then GW.SetMinimapShown(self:GetChecked() and true or false) end
+  end)
   table.insert(controls, function() mm:SetChecked(GW.MinimapShown and GW.MinimapShown() or false) end)
 
   heading("Data")
-  local house = fs(content, "GameFontHighlight", "LEFT"); house:SetPoint("TOPLEFT", 20, Y); house:SetWidth(580)
+  local house = fs(content, "GameFontHighlight", "LEFT")
+  house:SetPoint("TOPLEFT", 20, Y)
+  house:SetWidth(580)
   Y = Y - 20
-  local packLine = fs(content, "GameFontHighlightSmall", "LEFT"); packLine:SetPoint("TOPLEFT", 20, Y); packLine:SetWidth(580)
+  local packLine = fs(content, "GameFontHighlightSmall", "LEFT")
+  packLine:SetPoint("TOPLEFT", 20, Y)
+  packLine:SetWidth(580)
   Y = Y - 26
   table.insert(controls, function()
-    local h = GW.house or GW.DetectHouse()
+    local h = GW.House()
     local override = GoldwrightDB and GoldwrightDB.rulesetOverride
-    house:SetText(string.format("%s · %s · %s  |cff9a9aa2(realm “%s”%s)|r", h.region, h.ruleset, GW.HOUSE_NAMES[h.side], h.realm,
-      override and ", ruleset set by you" or ""))
+    house:SetText(
+      string.format(
+        "%s · %s · %s  |cff9a9aa2(realm “%s”%s)|r",
+        h.region,
+        h.ruleset,
+        GW.HOUSE_NAMES[h.side],
+        h.realm,
+        override and ", ruleset set by you" or ""
+      )
+    )
     local pack = GW.Pack()
     if pack then
-      packLine:SetText(string.format("Goldwright Data: %s %s · snapshot %s", h.packKey, pack.version or "", GW.Age(pack.snapshotAt)))
-      packLine:SetTextColor(GREY[1], GREY[2], GREY[3])
+      packLine:SetText(
+        string.format("Goldwright Data: %s %s · snapshot %s", h.packKey, pack.version or "", GW.Age(pack.snapshotAt))
+      )
+      setColor(packLine, GREY)
     else
-      packLine:SetText("No data pack loaded for " .. h.region .. " " .. h.ruleset .. ". Install Goldwright Data: " .. h.region .. " in your add-on manager.")
-      packLine:SetTextColor(GW.SIGNAL_ORANGE[1], GW.SIGNAL_ORANGE[2], GW.SIGNAL_ORANGE[3])
+      packLine:SetText(
+        "No data pack loaded for "
+          .. h.region
+          .. " "
+          .. h.ruleset
+          .. ". Install Goldwright Data: "
+          .. h.region
+          .. " in your add-on manager."
+      )
+      setColor(packLine, GW.SIGNAL_ORANGE)
     end
   end)
 
   -- Ruleset override (if detection from the realm name is wrong): stored outside opt so it survives Reset.
-  local l = fs(content, "GameFontHighlight", "LEFT"); l:SetPoint("TOPLEFT", 20, Y - 4); l:SetText("Ruleset")
-  local rules = { { nil, "Detect" }, { "Normal", "Normal" }, { "PvP", "PvP" }, { "Roleplay", "RP" }, { "Roleplay PvP", "RP-PvP" } }
+  local l = fs(content, "GameFontHighlight", "LEFT")
+  l:SetPoint("TOPLEFT", 20, Y - 4)
+  l:SetText("Ruleset")
+  local rules =
+    { { nil, "Detect" }, { "Normal", "Normal" }, { "PvP", "PvP" }, { "Roleplay", "RP" }, { "Roleplay PvP", "RP-PvP" } }
   local rb = {}
   local x = 220
   for _, o in ipairs(rules) do
     local b = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
-    b:SetText(o[2]); b:SetSize(64, 22); b:SetPoint("TOPLEFT", x, Y)
+    b:SetText(o[2])
+    b:SetSize(64, 22)
+    b:SetPoint("TOPLEFT", x, Y)
     x = x + 68
     b:SetScript("OnClick", function()
       GoldwrightDB.rulesetOverride = o[1]
       local pack = GW.ReloadPack()
       local h = GW.house
-      if pack then GW.Print("Using the %s %s data pack.", h.region, h.ruleset) else GW.PrintPackProblem() end
+      if pack then
+        GW.Print("Using the %s %s data pack.", h.region, h.ruleset)
+      else
+        GW.PrintPackProblem()
+      end
       GW.ApplyOptions()
     end)
     rb[#rb + 1] = { b = b, value = o[1] }
@@ -258,7 +339,11 @@ local function build()
   table.insert(controls, function()
     local cur = GoldwrightDB and GoldwrightDB.rulesetOverride
     for _, x2 in ipairs(rb) do
-      if x2.value == cur then x2.b:LockHighlight() else x2.b:UnlockHighlight() end
+      if x2.value == cur then
+        x2.b:LockHighlight()
+      else
+        x2.b:UnlockHighlight()
+      end
     end
   end)
   Y = Y - 32
@@ -270,7 +355,12 @@ local function build()
     GW.ApplyOptions()
     GW.Print("Your local search history is cleared.")
   end)
-  button("Show Welcome Again", 186, 180, function() if GW.ShowWelcome then GW.ShowWelcome() end end)
+  button("Show Welcome Again", 186, 180, function()
+    if GW.ShowWelcome then GW.ShowWelcome() end
+  end)
+  button("Report a Bug", 372, 130, function()
+    if GW.ShowBugReport then GW.ShowBugReport() end
+  end)
   Y = Y - 36
 
   heading("Reset")
@@ -284,7 +374,9 @@ frame:SetScript("OnShow", function()
   if not built then build() end
   refresh()
 end)
-GW.OnOptionsChanged(function() if frame:IsShown() then refresh() end end)
+GW.OnOptionsChanged(function()
+  if frame:IsShown() then refresh() end
+end)
 
 GW.OnLogin(function()
   if Settings and Settings.RegisterCanvasLayoutCategory then
@@ -295,6 +387,7 @@ GW.OnLogin(function()
   end
 end)
 
+--- Opens the Goldwright settings page (not in combat).
 function GW.OpenSettings()
   if InCombatLockdown and InCombatLockdown() then
     GW.Print("Settings open after combat.")

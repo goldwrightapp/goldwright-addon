@@ -38,7 +38,9 @@ Ideas are welcome too: pick **Feature request**.
 
 ## Support Goldwright
 
-Goldwright is free and funded by tips. If it saves you gold, you can [support it on the website](https://goldwright.app/support).
+Goldwright is free and funded by tips. If it saves you gold, you can [leave a tip on Ko-fi](https://ko-fi.com/goldwrightapp) or see the [server bill on the website](https://goldwright.app/support). Supporting unlocks nothing: everyone gets the same prices.
+
+Contact: hello@goldwright.app
 
 ## License
 

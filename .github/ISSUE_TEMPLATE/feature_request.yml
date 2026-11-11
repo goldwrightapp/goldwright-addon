@@ -1,7 +1,7 @@
 name: Feature request
 description: An idea for something Goldwright could do, or do better.
-title: "[Idea] "
-labels: ["enhancement"]
+title: '[Idea] '
+labels: ['enhancement']
 body:
   - type: markdown
     attributes:
@@ -13,7 +13,7 @@ body:
     attributes:
       label: What are you trying to do?
       description: The situation in the game, and what's hard or slow about it today.
-      placeholder: "When I sell herbs, I want to know ..."
+      placeholder: 'When I sell herbs, I want to know ...'
     validations:
       required: true
 

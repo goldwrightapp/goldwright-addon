@@ -1,22 +1,54 @@
--- Shopping lists (requirements SHOP-1..7). Lists live in GoldwrightDB.lists (account-wide, so every
--- character sees them). Running a list sends one search per entry (throttle-aware, with progress).
--- Commodities: the result says how many are under your max and what buying your wanted quantity
--- costs; Buy asks the auction house for the exact price (StartCommoditiesPurchase) and a second click
--- confirms (ConfirmCommoditiesPurchase): one purchase per click pair, never automatic.
--- Gear: Show sends a browse search so Blizzard's own Buy list shows the item; you buy it there.
+--- Shopping lists and the Shopping tab (SHOP-1..7). Lists live in GoldwrightDB.lists (account-wide);
+--- running one sends a throttle-aware search per entry. Commodities: Buy asks for the exact price
+--- (StartCommoditiesPurchase), a second click confirms (ConfirmCommoditiesPurchase), never automatic.
+--- Gear: Show sends a browse search so Blizzard's own Buy list shows the item; the player buys there.
 local _, GW = ...
 
-local ROWS, ROW_H = 10, 30
-local LIST_ROWS = 11
-local SEARCH_TIMEOUT = 6
-local BUY_TIMEOUT = 12
-local GREY = { 0.70, 0.70, 0.72 }
-local WHITE = { 1, 1, 1 }
+local ROWS, ROW_H = 10, 30 -- entry table: visible rows, row height
+local LIST_ROWS = 11 -- visible rows in the lists column
+local SEARCH_TIMEOUT = 6 -- seconds to wait for search results before giving up on an entry
+local BUY_TIMEOUT = 12 -- seconds to wait for the exact commodity price before cancelling
+local UI = GW.UI
+local fs, setColor = UI.FontString, UI.SetColor
+local GREY, WHITE = UI.GREY, UI.WHITE
 
 ---------------------------------------------------------------------------
 -- rules without UI (tested in server/test/addon.test.mjs)
 ---------------------------------------------------------------------------
--- "1g 2s 3c", "75c", "1s50c", "150" (copper) or "80%" (of market). Returns copper, pct.
+
+--- One entry of a shopping list, as saved in GoldwrightDB.lists.
+---@class GoldwrightShoppingEntry
+---@field name string item name as typed, or from the link
+---@field itemID? number item id (nil until a name-only entry is found by a browse search)
+---@field max? number most to pay per item, in copper
+---@field maxPct? number most to pay per item, as a % of market value (instead of `max`)
+---@field want? number how many to buy
+
+--- A saved shopping list.
+---@class GoldwrightShoppingList
+---@field name string
+---@field entries GoldwrightShoppingEntry[]
+
+--- What buying looks like for one item, from GW.BuyPlan (or built from browse results).
+---@class GoldwrightBuyPlan
+---@field cheapest? number lowest unit price listed, in copper (nil when none are listed)
+---@field listed number units listed by other players
+---@field available number units at or under the max price
+---@field units number units the plan buys (at most `want`)
+---@field total number cost of those units, in copper
+---@field avg? number average unit price of those units, rounded (nil when units is 0)
+
+--- The result of checking one entry.
+---@class GoldwrightShoppingResult
+---@field kind string "commodity", "item", "none" (none listed), "notfound" (no such name) or "unknown" (timeout)
+---@field plan? GoldwrightBuyPlan set for "commodity" and "item"
+---@field variants? number how many browse results matched (gear with several versions)
+---@field at? number GetTime() when the result arrived
+
+--- Parses a price the player typed: "1g 2s 3c", "75c", "1s50c", "150" (copper) or "80%" (of market).
+---@param text? string
+---@return number|nil copper price in copper, or nil
+---@return number|nil pct percentage of market, or nil
 function GW.ParseMoney(text)
   text = strtrim(text or ""):lower()
   if text == "" then return nil, nil end
@@ -33,19 +65,30 @@ function GW.ParseMoney(text)
   return total, nil
 end
 
--- Item id and name from an item link, or nil.
+--- Item id and name from an item link, or nil.
+---@param text? string item link (or any text containing "item:<id>")
+---@return number|nil itemID
+---@return string|nil name the text between [ and ], if any
 function GW.LinkItem(text)
   local id = text and tonumber(text:match("item:(%d+)"))
   if not id then return nil end
   return id, text:match("%[(.-)%]")
 end
 
+--- The saved shopping lists (GoldwrightDB.lists), created empty on first use.
+---@return GoldwrightShoppingList[]
 function GW.Lists()
   GoldwrightDB.lists = GoldwrightDB.lists or {}
   return GoldwrightDB.lists
 end
 
--- A new entry from what the player typed or shift-clicked. Returns entry or nil, error.
+--- A new list entry from what the player typed or shift-clicked. A plain name is looked up with
+--- GetItemInfo, which only knows items the client has cached; otherwise the id stays nil.
+---@param itemText? string item name (optionally in quotes) or item link
+---@param maxText? string max price, see GW.ParseMoney ("" for none)
+---@param wantText? string quantity wanted ("" for none)
+---@return GoldwrightShoppingEntry|nil entry
+---@return string? err message for the player when the input is invalid
 function GW.MakeEntry(itemText, maxText, wantText)
   itemText = strtrim(itemText or "")
   if itemText == "" then return nil, "Type an item name or Shift-click an item." end
@@ -68,9 +111,15 @@ function GW.MakeEntry(itemText, maxText, wantText)
   return e
 end
 
--- Export: one list per line, "Name^Item;id=2840;max=75;qty=20^Other Item". Import also takes
--- Auctionator-style terms ("Name"; extra fields after ';' are ignored unless they are ours).
+--- Replaces the export format's separators (^ ; newline) in a name with spaces.
+---@param s string
+---@return string
 local function clean(s) return (s:gsub("[%^;\n]", " ")) end
+
+--- Exports lists as text: one list per line, "Name^Item;id=2840;max=75;qty=20^Other Item".
+--- A percentage max is written as "max=80%".
+---@param lists GoldwrightShoppingList[]
+---@return string
 function GW.ExportLists(lists)
   local lines = {}
   for _, l in ipairs(lists) do
@@ -88,25 +137,38 @@ function GW.ExportLists(lists)
   return table.concat(lines, "\n")
 end
 
+--- Parses exported lists (see GW.ExportLists). Also takes Auctionator-style terms ("Name" in quotes;
+--- fields after ';' are ignored unless they are id=, max= or qty=). Lines without a name or without
+--- any item are skipped.
+---@param text? string
+---@return GoldwrightShoppingList[]
 function GW.ImportLists(text)
   local out = {}
   for line in (text or ""):gmatch("[^\r\n]+") do
     local pieces = {}
-    for p in (line .. "^"):gmatch("(.-)%^") do pieces[#pieces + 1] = p end
+    for p in (line .. "^"):gmatch("(.-)%^") do
+      pieces[#pieces + 1] = p
+    end
     local name = strtrim(pieces[1] or "")
     if name ~= "" and #pieces > 1 then
       local list = { name = name, entries = {} }
       for i = 2, #pieces do
         local fields = {}
-        for f in (pieces[i] .. ";"):gmatch("(.-);") do fields[#fields + 1] = f end
+        for f in (pieces[i] .. ";"):gmatch("(.-);") do
+          fields[#fields + 1] = f
+        end
         local item = strtrim(fields[1] or ""):gsub('^"(.*)"$', "%1")
         if item ~= "" then
           local e = { name = item }
           for j = 2, #fields do
             local k, v = fields[j]:match("^%s*(%a+)=(.-)%s*$")
-            if k == "id" then e.itemID = tonumber(v)
-            elseif k == "qty" then e.want = tonumber(v)
-            elseif k == "max" then e.max, e.maxPct = GW.ParseMoney(v) end
+            if k == "id" then
+              e.itemID = tonumber(v)
+            elseif k == "qty" then
+              e.want = tonumber(v)
+            elseif k == "max" then
+              e.max, e.maxPct = GW.ParseMoney(v)
+            end
           end
           list.entries[#list.entries + 1] = e
         end
@@ -117,8 +179,12 @@ function GW.ImportLists(text)
   return out
 end
 
--- What buying looks like from a commodity's listings (yours excluded): the cheapest price, how many
--- are at or under `max` (all when nil), and the cost of the cheapest `want` of those.
+--- What buying looks like from an item's listings (the player's own excluded): the cheapest price,
+--- how many are at or under `max` (all when nil), and the cost of the cheapest `want` of those.
+---@param listings? table[] rows from GW.CollectSearchResults ({ price, qty, own?, ownQty? })
+---@param max? number most to pay per unit, in copper
+---@param want? number units to buy (nil: all available)
+---@return GoldwrightBuyPlan
 function GW.BuyPlan(listings, max, want)
   local l = {}
   for _, x in ipairs(listings or {}) do
@@ -142,13 +208,20 @@ function GW.BuyPlan(listings, max, want)
   return plan
 end
 
--- Market value of an item at your house (scan or data pack; 7-day normal as fallback).
+--- Market value of an item at the auction house you are shopping at (Blackwater in neutral towns,
+--- else your faction's; scan or data pack), falling back to the 7-day and then the 30-day normal price.
+---@param id? number item id
+---@return number|nil copper
 local function market(id)
   local d = id and GW.ItemData(id)
-  local h = GW.house or GW.DetectHouse()
-  local s = d and d[h.side]
+  local side = GW.AuctionSide and GW.AuctionSide() or GW.House().side
+  local s = d and d[side]
   return s and (s.mv or s.avg7 or s.avg30) or nil
 end
+
+--- An entry's max price in copper: the fixed max, or maxPct of the current market value.
+---@param e GoldwrightShoppingEntry
+---@return number|nil copper nil when there is no max, or no market value for a % max
 function GW.EntryMax(e)
   if e.max then return e.max end
   if e.maxPct then
@@ -158,7 +231,12 @@ function GW.EntryMax(e)
   return nil
 end
 
--- "20% under market" / "at market" / "35% over market" (or nil without a market value).
+--- "20% under market" / "at market" (within 3%) / "35% over market", with a colour: blue or orange
+--- once the difference reaches the signalPct setting, grey otherwise.
+---@param price? number unit price in copper
+---@param id? number item id
+---@return string|nil text nil without a market value or price
+---@return number[]? color {r, g, b}
 function GW.MarketText(price, id)
   local m = market(id)
   if not (m and m > 0 and price) then return nil end
@@ -172,11 +250,40 @@ end
 -- running a list
 ---------------------------------------------------------------------------
 local view
+
+--- A commodity purchase in progress (between Buy and the purchase result).
+---@class GoldwrightShoppingBuy
+---@field entry GoldwrightShoppingEntry
+---@field qty number units asked for
+---@field estimate number cost from the buy plan, in copper
+---@field at number GetTime() when Buy was clicked
+---@field unit? number exact unit price from COMMODITY_PRICE_UPDATED
+---@field total? number exact total from COMMODITY_PRICE_UPDATED (set: Confirm is possible)
+---@field confirming? boolean Confirm was clicked
+---@field done? boolean the purchase succeeded
+
+--- Shopping tab state (session only, not saved).
+---@class GoldwrightShoppingState
+---@field results table<GoldwrightShoppingEntry, GoldwrightShoppingResult> last result per entry
+---@field queue GoldwrightShoppingEntry[] entries still to search
+---@field checked number entries finished in this run
+---@field total number entries in this run
+---@field bought table<GoldwrightShoppingEntry, number> units bought per entry this session
+---@field current? GoldwrightShoppingEntry entry being searched now
+---@field token? table identifies the current search, so a stale timeout does nothing
+---@field purpose? string "search" (item key search) or "browse" (name search)
+---@field running? boolean a list run is in progress
+---@field waiting? boolean waiting for a free search slot (throttle)
+---@field buy? GoldwrightShoppingBuy
 local sv = { results = {}, queue = {}, checked = 0, total = 0, bought = {} }
 local render
 
+--- The entry being searched now, or nil.
 local function current() return sv.current end
 
+--- The selected list (GoldwrightDB.listSel), falling back to the first list. Saves the fixed index.
+---@return GoldwrightShoppingList|nil list
+---@return number|nil index
 local function selectedList()
   local lists = GW.Lists()
   local i = GoldwrightDB.listSel or 1
@@ -185,10 +292,14 @@ local function selectedList()
   return i and lists[i], i
 end
 
-local function sorts() return { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } } end
+local sorts = GW.PriceSorts
 
 local runNext
 
+--- Stores the result for the entry being searched and moves on to the next one. Ignored when `e`
+--- is no longer the current entry (a late answer).
+---@param e GoldwrightShoppingEntry
+---@param result GoldwrightShoppingResult
 local function finishEntry(e, result)
   if sv.current ~= e then return end
   result.at = GetTime()
@@ -199,6 +310,10 @@ local function finishEntry(e, result)
   C_Timer.After(0.1, runNext)
 end
 
+--- Sends the search for an entry and arms the timeout. An item search that times out without results
+--- falls back to a browse search; otherwise the entry finishes as "unknown".
+---@param e GoldwrightShoppingEntry
+---@param purpose string "search" (by item key, needs itemID) or "browse" (by name)
 local function send(e, purpose)
   local token = {}
   sv.token, sv.purpose = token, purpose
@@ -220,6 +335,8 @@ local function send(e, purpose)
   end)
 end
 
+--- Starts the next queued search, or retries after GW.SEARCH_RETRY while the throttle has no free
+--- slot. Ends the run when the queue is empty.
 runNext = function()
   if sv.current then return end
   local e = sv.queue[1]
@@ -231,7 +348,7 @@ runNext = function()
   if not GW.CanSearch() then
     sv.waiting = true
     if render then render() end
-    C_Timer.After(2, runNext)
+    C_Timer.After(GW.SEARCH_RETRY, runNext)
     return
   end
   sv.waiting = false
@@ -241,7 +358,8 @@ runNext = function()
   if render then render() end
 end
 
--- SHOP-3: run the selected list (or one entry).
+--- SHOP-3: runs the selected list (or one entry of it). Needs the auction house open.
+---@param only? GoldwrightShoppingEntry check just this entry
 function GW.RunList(only)
   if not (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) then return GW.Print("Open the auction house first.") end
   local list = selectedList()
@@ -258,12 +376,16 @@ function GW.RunList(only)
   runNext()
 end
 
--- Check one entry now (just added, or just bought): joins a running list, or runs alone.
+--- Checks one entry now (just added, or just bought): joins a running list, or runs alone. Does
+--- nothing while the auction house is closed.
+---@param e GoldwrightShoppingEntry
 function GW.CheckEntry(e)
   if not (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) then return end
   sv.results[e] = nil
   if sv.running then
-    for _, q in ipairs(sv.queue) do if q == e then return end end
+    for _, q in ipairs(sv.queue) do
+      if q == e then return end
+    end
     if sv.current == e then return end
     sv.queue[#sv.queue + 1] = e
     sv.total = sv.total + 1
@@ -274,12 +396,16 @@ function GW.CheckEntry(e)
   runNext()
 end
 
+--- Stops a list run: clears the queue and forgets the current search (results so far stay).
 function GW.StopList()
   sv.queue, sv.running, sv.current, sv.token, sv.waiting = {}, false, nil, nil, false
   if render then render() end
 end
 
--- Browse results: pick the ones for this entry (by item id, or by exact name when we have no id).
+--- The browse results for this entry: by item id, or by exact name (case-insensitive) when the
+--- entry has no id yet.
+---@param e GoldwrightShoppingEntry
+---@return table[] results browse result rows
 local function browseMatches(e)
   local out = {}
   local results = C_AuctionHouse.GetBrowseResults and C_AuctionHouse.GetBrowseResults() or {}
@@ -296,6 +422,10 @@ local function browseMatches(e)
   return out
 end
 
+--- Handles commodity and item search results for the current entry. Commodities get a buy plan for
+--- the quantity still wanted (want minus what was bought this session).
+---@param event string COMMODITY_SEARCH_RESULTS_* or ITEM_SEARCH_RESULTS_*
+---@param arg1 any item id (commodity events) or item key (item events)
 local function onSearchResults(event, arg1)
   local e = current()
   if not (e and e.itemID) then return end
@@ -316,6 +446,9 @@ local function onSearchResults(event, arg1)
   end
 end
 
+--- Handles browse results for the current entry. A name-only entry that is found learns its item id
+--- and is searched again at the front of the queue; gear gets a plan from the browse rows (cheapest
+--- price and listed count only).
 local function onBrowseResults()
   local e = current()
   if not (e and sv.purpose == "browse") then return end
@@ -338,24 +471,37 @@ local function onBrowseResults()
     if r.minPrice and r.minPrice > 0 and (not cheapest or r.minPrice < cheapest) then cheapest = r.minPrice end
   end
   local max = GW.EntryMax(e)
-  finishEntry(e, { kind = "item", plan = { cheapest = cheapest, listed = listed, available = (not max or (cheapest and cheapest <= max)) and listed or 0, units = 0, total = 0 }, variants = #m })
+  finishEntry(e, {
+    kind = "item",
+    plan = {
+      cheapest = cheapest,
+      listed = listed,
+      available = (not max or (cheapest and cheapest <= max)) and listed or 0,
+      units = 0,
+      total = 0,
+    },
+    variants = #m,
+  })
 end
 
 ---------------------------------------------------------------------------
 -- buying commodities (SHOP-5): Buy gets the exact price, Confirm buys
 ---------------------------------------------------------------------------
-local function toast(text, color)
-  if not view then return end
-  view.toast:SetText(text or "")
-  local c = color or WHITE
-  view.toast:SetTextColor(c[1], c[2], c[3])
-end
+--- Shows a status line under the Shopping tab.
+---@param text string
+---@param color? number[] {r, g, b}
+local function toast(text, color) UI.Toast(view, text, color) end
 
+--- Cancels a pending commodity purchase (if any) and forgets it.
 local function cancelBuy()
   if sv.buy and C_AuctionHouse.CancelCommoditiesPurchase then pcall(C_AuctionHouse.CancelCommoditiesPurchase) end
   sv.buy = nil
 end
 
+--- The Buy / Confirm button of a commodity row. First click asks the auction house for the exact
+--- price of the planned units (cancelled after BUY_TIMEOUT without an answer); a second click, once
+--- the price is known, confirms the purchase. Refused in combat.
+---@param e GoldwrightShoppingEntry
 local function buyClick(e)
   local res = sv.results[e]
   local b = sv.buy
@@ -387,6 +533,8 @@ local function buyClick(e)
   end)
 end
 
+--- The Show button of a gear row: sends a browse search so Blizzard's Buy list shows the item.
+---@param e GoldwrightShoppingEntry
 local function showInBuyTab(e)
   if not GW.CanSearch() then return toast("Waiting for a search slot: try again in a moment.", GW.SIGNAL_ORANGE) end
   GW.NoteSearch()
@@ -394,6 +542,12 @@ local function showInBuyTab(e)
   toast("Shown in Blizzard's list on the left: buy it there.", GREY)
 end
 
+--- Handles the commodity purchase events for the pending buy: the exact price (with warnings when it
+--- is over the max or more gold than the player has), price gone, success (re-checks the entry) or
+--- failure.
+---@param event string COMMODITY_PRICE_* or COMMODITY_PURCHASE_*
+---@param a1 any unit price (COMMODITY_PRICE_UPDATED)
+---@param a2 any total price (COMMODITY_PRICE_UPDATED)
 local function onBuyEvent(event, a1, a2)
   local b = sv.buy
   if not b then return end
@@ -402,11 +556,27 @@ local function onBuyEvent(event, a1, a2)
     b.unit, b.total = a1, a2
     local max = GW.EntryMax(e)
     if max and b.unit and b.unit > max then
-      toast(string.format("The price went up: %s each is over your max (%s). Confirm only if you still want it.", GW.Money(b.unit), GW.Money(max)), GW.SIGNAL_ORANGE)
+      toast(
+        string.format(
+          "The price went up: %s each is over your max (%s). Confirm only if you still want it.",
+          GW.Money(b.unit),
+          GW.Money(max)
+        ),
+        GW.SIGNAL_ORANGE
+      )
     elseif b.total and GetMoney and b.total > GetMoney() then
       toast("Not enough gold for " .. GW.Money(b.total) .. ".", GW.SIGNAL_ORANGE)
     else
-      toast(string.format("%d × %s for %s (%s each). Click Confirm to buy.", b.qty, e.name, GW.Money(b.total), GW.Money(b.unit)), WHITE)
+      toast(
+        string.format(
+          "%d × %s for %s (%s each). Click Confirm to buy.",
+          b.qty,
+          e.name,
+          GW.Money(b.total),
+          GW.Money(b.unit)
+        ),
+        WHITE
+      )
     end
   elseif event == "COMMODITY_PRICE_UNAVAILABLE" then
     sv.buy = nil
@@ -428,19 +598,19 @@ end
 ---------------------------------------------------------------------------
 -- the Shopping tab
 ---------------------------------------------------------------------------
-local function fs(parent, template, justify)
-  local f = parent:CreateFontString(nil, "ARTWORK", template or "GameFontHighlight")
-  if justify then f:SetJustifyH(justify) end
-  return f
-end
-local function setColor(f, c) f:SetTextColor(c[1], c[2], c[3]) end
-local function n(x) return BreakUpLargeNumbers and BreakUpLargeNumbers(x) or tostring(x) end
+local n = GW.Number
 
+--- The "Found" column text for an entry: search state, or what its last result found.
+---@param e GoldwrightShoppingEntry
+---@return string text
+---@return number[] color {r, g, b}
 local function foundText(e)
   local r = sv.results[e]
   if sv.current == e then return "Searching…", GREY end
   if not r then
-    for _, q in ipairs(sv.queue) do if q == e then return "Waiting…", GREY end end
+    for _, q in ipairs(sv.queue) do
+      if q == e then return "Waiting…", GREY end
+    end
     return (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) and "Not checked yet: Run List" or "Not checked yet", GREY
   end
   if r.kind == "unknown" then return "No answer from the auction house", GREY end
@@ -453,15 +623,24 @@ local function foundText(e)
   end
   local text
   if r.kind == "commodity" then
-    text = (max and string.format("%s at ≤ %s", n(p.available), GW.Money(max)) or string.format("%s listed from %s", n(p.listed), GW.Money(p.cheapest)))
-      .. (sv.bought[e] and (" · bought " .. sv.bought[e]) or "")
+    text = (
+      max and string.format("%s at ≤ %s", n(p.available), GW.Money(max))
+      or string.format("%s listed from %s", n(p.listed), GW.Money(p.cheapest))
+    ) .. (sv.bought[e] and (" · bought " .. sv.bought[e]) or "")
   else
-    text = string.format("%s listed from %s%s", n(p.listed), GW.Money(p.cheapest), r.variants and r.variants > 1 and (" (" .. r.variants .. " versions)") or "")
+    text = string.format(
+      "%s listed from %s%s",
+      n(p.listed),
+      GW.Money(p.cheapest),
+      r.variants and r.variants > 1 and (" (" .. r.variants .. " versions)") or ""
+    )
   end
   local mt, color = GW.MarketText(p.avg or p.cheapest, e.itemID)
   return text .. (mt and ("  ·  " .. mt) or ""), color or WHITE
 end
 
+--- Redraws the Shopping tab (lists column, progress, entry rows and their action buttons). Does
+--- nothing while the tab is hidden.
 render = function()
   if not (view and view:IsShown()) then return end
   local lists = GW.Lists()
@@ -484,13 +663,22 @@ render = function()
       row:Hide()
     end
   end
-  for _, b in ipairs(view.listButtons) do b:SetEnabled(list ~= nil or b.always) end
+  for _, b in ipairs(view.listButtons) do
+    b:SetEnabled(list ~= nil or b.always)
+  end
 
   view.title:SetText(list and list.name or "No lists yet: click New List")
-  view.addBox:SetShown(list ~= nil); view.addMax:SetShown(list ~= nil); view.addWant:SetShown(list ~= nil); view.add:SetShown(list ~= nil)
+  view.addBox:SetShown(list ~= nil)
+  view.addMax:SetShown(list ~= nil)
+  view.addWant:SetShown(list ~= nil)
+  view.add:SetShown(list ~= nil)
   local progress = ""
-  if sv.waiting then progress = GW.WaitText()
-  elseif sv.total > 0 then progress = string.format("Searched %d of %d · %d searches this minute", sv.checked, sv.total, GW.SearchesThisMinute()) end
+  if sv.waiting then
+    progress = GW.WaitText()
+  elseif sv.total > 0 then
+    progress =
+      string.format("Searched %d of %d · %d searches this minute", sv.checked, sv.total, GW.SearchesThisMinute())
+  end
   view.progress:SetText(progress)
   view.run:SetText(sv.running and "Stop" or "Run List")
   view.run:SetEnabled(list ~= nil and #list.entries > 0)
@@ -504,7 +692,11 @@ render = function()
       row:Show()
       row.name:SetText(e.name .. (e.itemID and "" or "  |cff9a9aa2(not found yet)|r"))
       local max = GW.EntryMax(e)
-      row.max:SetText(e.maxPct and (e.maxPct .. "%" .. (max and (" · " .. GW.Money(max)) or "")) or (e.max and GW.Money(e.max)) or "–")
+      row.max:SetText(
+        e.maxPct and (e.maxPct .. "%" .. (max and (" · " .. GW.Money(max)) or ""))
+          or (e.max and GW.Money(e.max))
+          or "–"
+      )
       row.want:SetText(e.want and tostring(e.want) or "–")
       local text, color = foundText(e)
       row.found:SetText(text)
@@ -513,16 +705,22 @@ render = function()
       local b = sv.buy
       if b and b.entry == e then
         row.action:Show()
-        row.action:SetText(b.confirming and "Buying…" or b.total and ("Confirm · " .. GW.Money(b.total)) or "Getting price…")
+        row.action:SetText(
+          b.confirming and "Buying…" or b.total and ("Confirm · " .. GW.Money(b.total)) or "Getting price…"
+        )
         row.action:SetEnabled(b.total ~= nil and not b.confirming)
       elseif r and r.kind == "commodity" and r.plan.units > 0 and e.want then
         row.action:Show()
         row.action:SetText(string.format("Buy %d · %s", r.plan.units, GW.Money(r.plan.total)))
         row.action:SetEnabled(sv.buy == nil)
       elseif r and r.kind == "commodity" and r.plan.available > 0 then
-        row.action:Show(); row.action:SetText("Set Want to Buy"); row.action:Disable()
+        row.action:Show()
+        row.action:SetText("Set Want to Buy")
+        row.action:Disable()
       elseif r and r.kind == "item" and r.plan.available > 0 then
-        row.action:Show(); row.action:SetText("Show"); row.action:Enable()
+        row.action:Show()
+        row.action:SetText("Show")
+        row.action:Enable()
       else
         row.action:Hide()
       end
@@ -542,7 +740,10 @@ StaticPopupDialogs.GOLDWRIGHT_LIST_NAME = {
   OnShow = function(self, data)
     data = data or self.data
     local box = self.editBox or self.EditBox or (self.GetEditBox and self:GetEditBox())
-    if box then box:SetText(data and data.name or ""); box:HighlightText() end
+    if box then
+      box:SetText(data and data.name or "")
+      box:HighlightText()
+    end
   end,
   OnAccept = function(self, data)
     data = data or self.data
@@ -555,20 +756,34 @@ StaticPopupDialogs.GOLDWRIGHT_LIST_NAME = {
     StaticPopupDialogs.GOLDWRIGHT_LIST_NAME.OnAccept(p, p.data)
     p:Hide()
   end,
-  timeout = 0, whileDead = true, hideOnEscape = true,
+  timeout = 0,
+  whileDead = true,
+  hideOnEscape = true,
 }
 StaticPopupDialogs.GOLDWRIGHT_LIST_DELETE = {
-  text = "Delete the shopping list \"%s\"?",
+  text = 'Delete the shopping list "%s"?',
   button1 = YES or "Yes",
   button2 = NO or "No",
-  OnAccept = function(self, data) data = data or self.data; if data and data.apply then data.apply() end end,
-  timeout = 0, whileDead = true, hideOnEscape = true,
+  OnAccept = function(self, data)
+    data = data or self.data
+    if data and data.apply then data.apply() end
+  end,
+  timeout = 0,
+  whileDead = true,
+  hideOnEscape = true,
 }
 
+--- Asks for a list name in a popup.
+---@param prompt string popup text
+---@param name string prefilled name
+---@param apply fun(name: string) called with the trimmed, non-empty name on OK
 local function askName(prompt, name, apply)
   StaticPopup_Show("GOLDWRIGHT_LIST_NAME", prompt, nil, { name = name, apply = apply })
 end
 
+--- A copy of a list named "<name> (copy)", with copied entries.
+---@param l GoldwrightShoppingList
+---@return GoldwrightShoppingList
 local function copyList(l)
   local c = { name = l.name .. " (copy)", entries = {} }
   for _, e in ipairs(l.entries) do
@@ -577,7 +792,13 @@ local function copyList(l)
   return c
 end
 
--- SHOP-7: add an item to the selected list (or a new "Shopping" list).
+--- SHOP-7: adds an item to the selected list (or to a new "Shopping" list when there is none).
+--- Refuses an item already in the list (same id or same name).
+---@param itemText? string see GW.MakeEntry
+---@param maxText? string
+---@param wantText? string
+---@return GoldwrightShoppingEntry|nil entry
+---@return GoldwrightShoppingList|string list the list it went into, or an error message
 function GW.AddToList(itemText, maxText, wantText)
   local lists = GW.Lists()
   local list = selectedList()
@@ -600,43 +821,42 @@ end
 
 -- Import / export window (SHOP-6)
 local io
+
+--- Opens the import / export window (built on first use). Import appends the parsed lists and
+--- selects the last one; export shows all lists as text, highlighted for copying.
+---@param mode string "import" or "export"
 local function showIO(mode)
   if not io then
-    io = CreateFrame("Frame", "GoldwrightListIO", UIParent, "ButtonFrameTemplate")
-    io:SetSize(520, 360); io:SetPoint("CENTER"); io:SetFrameStrata("DIALOG")
-    if ButtonFrameTemplate_HidePortrait then ButtonFrameTemplate_HidePortrait(io) end
-    if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(io) end
-    io:EnableMouse(true)
-    GW.CloseOnEscape(io)
-    io.hint = fs(io, "GameFontHighlightSmall", "LEFT"); io.hint:SetPoint("TOPLEFT", 18, -32); io.hint:SetWidth(480)
-    -- a framed text area: dark background, tooltip-style border, padding; click anywhere to type
-    local area = CreateFrame("Frame", nil, io, "BackdropTemplate")
-    area:SetPoint("TOPLEFT", 14, -54); area:SetPoint("BOTTOMRIGHT", -14, 48)
-    if area.SetBackdrop then
-      area:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 14, insets = { left = 3, right = 3, top = 3, bottom = 3 } })
-      area:SetBackdropColor(0, 0, 0, 0.6)
-      area:SetBackdropBorderColor(0.6, 0.6, 0.65, 1)
-    end
-    local scroll = CreateFrame("ScrollFrame", nil, area, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 8, -8); scroll:SetPoint("BOTTOMRIGHT", -28, 8)
-    io.box = CreateFrame("EditBox", nil, scroll)
-    io.box:SetMultiLine(true); io.box:SetFontObject("ChatFontNormal"); io.box:SetWidth(440); io.box:SetAutoFocus(false)
-    io.box:SetTextInsets(2, 2, 2, 2)
-    io.box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    io.box:SetScript("OnEditFocusGained", function(self) if io.mode == "export" then self:HighlightText() end end)
-    scroll:SetScrollChild(io.box)
-    area:EnableMouse(true)
-    area:SetScript("OnMouseDown", function() io.box:SetFocus() end)
-    io.ok = CreateFrame("Button", nil, io, "UIPanelButtonTemplate"); io.ok:SetSize(120, 24); io.ok:SetPoint("BOTTOMRIGHT", -16, 16)
+    io = UI.Window("GoldwrightListIO", 520, 360, { strata = "DIALOG" })
+    io:SetPoint("CENTER")
+    io.hint = fs(io, "GameFontHighlightSmall", "LEFT")
+    io.hint:SetPoint("TOPLEFT", 18, -32)
+    io.hint:SetWidth(480)
+    local area
+    area, io.box = UI.TextArea(io, 440)
+    area:SetPoint("TOPLEFT", 14, -54)
+    area:SetPoint("BOTTOMRIGHT", -14, 48)
+    io.box:SetScript("OnEditFocusGained", function(self)
+      if io.mode == "export" then self:HighlightText() end
+    end)
+    io.ok = CreateFrame("Button", nil, io, "UIPanelButtonTemplate")
+    io.ok:SetSize(120, 24)
+    io.ok:SetPoint("BOTTOMRIGHT", -16, 16)
     io.ok:SetScript("OnClick", function()
       if io.mode == "import" then
         local got = GW.ImportLists(io.box:GetText())
         local lists = GW.Lists()
         local items = 0
-        for _, l in ipairs(got) do lists[#lists + 1] = l; items = items + #l.entries end
+        for _, l in ipairs(got) do
+          lists[#lists + 1] = l
+          items = items + #l.entries
+        end
         if #got > 0 then GoldwrightDB.listSel = #lists end
-        toast(#got > 0 and string.format("Imported %d list%s with %d items.", #got, #got == 1 and "" or "s", items) or "Nothing to import: one list per line, Name^Item^Item.", #got > 0 and GW.SIGNAL_BLUE or GW.SIGNAL_ORANGE)
+        toast(
+          #got > 0 and string.format("Imported %d list%s with %d items.", #got, #got == 1 and "" or "s", items)
+            or "Nothing to import: one list per line, Name^Item^Item.",
+          #got > 0 and GW.SIGNAL_BLUE or GW.SIGNAL_ORANGE
+        )
       end
       io:Hide()
       if render then render() end
@@ -645,7 +865,9 @@ local function showIO(mode)
   io.mode = mode
   if io.SetTitle then io:SetTitle(mode == "import" and "Import Shopping Lists" or "Export Shopping Lists") end
   if mode == "import" then
-    io.hint:SetText("Paste lists here, one per line: List name^Item^Item;max=75c;qty=20. Auctionator lists work too (names only).")
+    io.hint:SetText(
+      "Paste lists here, one per line: List name^Item^Item;max=75c;qty=20. Auctionator lists work too (names only)."
+    )
     io.box:SetText("")
     io.ok:SetText("Import")
   else
@@ -658,6 +880,9 @@ local function showIO(mode)
   io.box:SetFocus()
 end
 
+--- Builds the Shopping tab inside `parent`: the lists column on the left, the selected list's
+--- add-item boxes and entry table on the right.
+---@param parent table tab content frame
 local function build(parent)
   view = CreateFrame("Frame", nil, parent)
   view:SetAllPoints()
@@ -666,22 +891,35 @@ local function build(parent)
   -- duplicate, delete) with tooltips; double-click a name to rename. Below: New List, Import, Export.
   local function renameList()
     local list = selectedList()
-    if list then askName("Rename the shopping list:", list.name, function(name) list.name = name; render() end) end
+    if list then
+      askName("Rename the shopping list:", list.name, function(name)
+        list.name = name
+        render()
+      end)
+    end
   end
   local function copySelected()
     local list, i = selectedList()
-    if list then table.insert(GW.Lists(), i + 1, copyList(list)); GoldwrightDB.listSel = i + 1; render() end
+    if list then
+      table.insert(GW.Lists(), i + 1, copyList(list))
+      GoldwrightDB.listSel = i + 1
+      render()
+    end
   end
   local function deleteSelected()
     local list, i = selectedList()
     if not list then return end
-    StaticPopup_Show("GOLDWRIGHT_LIST_DELETE", list.name, nil, { apply = function()
-      table.remove(GW.Lists(), i)
-      GoldwrightDB.listSel = math.max(1, i - 1)
-      GW.StopList()
-      render()
-    end })
+    StaticPopup_Show("GOLDWRIGHT_LIST_DELETE", list.name, nil, {
+      apply = function()
+        table.remove(GW.Lists(), i)
+        GoldwrightDB.listSel = math.max(1, i - 1)
+        GW.StopList()
+        render()
+      end,
+    })
   end
+  --- Moves the selected list up (-1) or down (1).
+  ---@param d number
   local function move(d)
     local lists = GW.Lists()
     local _, i = selectedList()
@@ -692,22 +930,42 @@ local function build(parent)
     end
   end
   local ICONS = {
-    { key = "up", tex = "Interface\\ChatFrame\\UI-ChatIcon-ScrollUp-Up", tip = "Move up", fn = function() move(-1) end },
-    { key = "down", tex = "Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up", tip = "Move down", fn = function() move(1) end },
-    { key = "rename", tex = "Interface\\Buttons\\UI-GuildButton-PublicNote-Up", tip = "Rename (or double-click the name)", fn = renameList },
+    {
+      key = "up",
+      tex = "Interface\\ChatFrame\\UI-ChatIcon-ScrollUp-Up",
+      tip = "Move up",
+      fn = function() move(-1) end,
+    },
+    {
+      key = "down",
+      tex = "Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up",
+      tip = "Move down",
+      fn = function() move(1) end,
+    },
+    {
+      key = "rename",
+      tex = "Interface\\Buttons\\UI-GuildButton-PublicNote-Up",
+      tip = "Rename (or double-click the name)",
+      fn = renameList,
+    },
     { key = "copy", tex = "Interface\\Buttons\\UI-PlusButton-Up", tip = "Duplicate this list", fn = copySelected },
     { key = "delete", tex = "Interface\\Buttons\\UI-GroupLoot-Pass-Up", tip = "Delete this list", fn = deleteSelected },
   }
 
-  local lh = fs(view, "GameFontNormal", "LEFT"); lh:SetPoint("TOPLEFT", 12, -8); lh:SetText("Lists")
+  UI.Header(view, "Lists", 12, -8)
   view.listRows = {}
   for i = 1, LIST_ROWS do
     local row = CreateFrame("Button", nil, view)
     row:SetSize(220, 24)
     row:SetPoint("TOPLEFT", 8, -28 - (i - 1) * 24)
     row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
-    row.sel = row:CreateTexture(nil, "BACKGROUND"); row.sel:SetAllPoints(); row.sel:SetColorTexture(0.24, 0.37, 0.66, 0.35)
-    row.text = fs(row, "GameFontHighlight", "LEFT"); row.text:SetPoint("LEFT", 6, 0); row.text:SetWidth(208); row.text:SetWordWrap(false)
+    row.sel = row:CreateTexture(nil, "BACKGROUND")
+    row.sel:SetAllPoints()
+    row.sel:SetColorTexture(0.24, 0.37, 0.66, 0.35)
+    row.text = fs(row, "GameFontHighlight", "LEFT")
+    row.text:SetPoint("LEFT", 6, 0)
+    row.text:SetWidth(208)
+    row.text:SetWordWrap(false)
     row:SetScript("OnClick", function(self)
       GoldwrightDB.listSel = self.index
       GW.StopList()
@@ -730,20 +988,24 @@ local function build(parent)
       b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
       b.key = ic.key
       b:SetScript("OnClick", ic.fn)
-      b:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText(ic.tip)
-        GameTooltip:Show()
-      end)
-      b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+      UI.HoverTip(b, ic.tip)
       row.icons[ic.key] = b
     end
     view.listRows[i] = row
   end
   view.listButtons = {}
+  --- A button under the lists column, anchored BOTTOMLEFT at x, y.
+  ---@param label string
+  ---@param x number
+  ---@param y number
+  ---@param w number width
+  ---@param always boolean enabled even when there is no list
+  ---@param fn function click handler
+  ---@return table button
   local function lbtn(label, x, y, w, always, fn)
-    local b = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
-    b:SetSize(w, 22); b:SetPoint("BOTTOMLEFT", x, y); b:SetText(label); b.always = always
+    local b = UI.Button(view, label, w, 22)
+    b:SetPoint("BOTTOMLEFT", x, y)
+    b.always = always
     b:SetScript("OnClick", fn)
     view.listButtons[#view.listButtons + 1] = b
     return b
@@ -759,23 +1021,42 @@ local function build(parent)
   lbtn("Import", 8, 10, 108, true, function() showIO("import") end)
   lbtn("Export", 120, 10, 108, false, function() showIO("export") end)
 
-  local div = view:CreateTexture(nil, "ARTWORK"); div:SetColorTexture(1, 1, 1, 0.08)
-  div:SetPoint("TOPLEFT", 238, -6); div:SetPoint("BOTTOMLEFT", 238, 6); div:SetWidth(1)
+  UI.Divider(view, 238)
 
   -- right: the selected list (SHOP-2..5)
   local X = 252
-  view.title = fs(view, "GameFontNormalLarge", "LEFT"); view.title:SetPoint("TOPLEFT", X, -8)
-  view.progress = fs(view, "GameFontDisableSmall", "LEFT"); view.progress:SetPoint("LEFT", view.title, "RIGHT", 12, 0)
+  view.title = fs(view, "GameFontNormalLarge", "LEFT")
+  view.title:SetPoint("TOPLEFT", X, -8)
+  view.progress = fs(view, "GameFontDisableSmall", "LEFT")
+  view.progress:SetPoint("LEFT", view.title, "RIGHT", 12, 0)
   view.run = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
-  view.run:SetSize(120, 24); view.run:SetPoint("TOPRIGHT", -12, -4)
-  view.run:SetScript("OnClick", function() if sv.running then GW.StopList() else GW.RunList() end end)
+  view.run:SetSize(120, 24)
+  view.run:SetPoint("TOPRIGHT", -12, -4)
+  view.run:SetScript("OnClick", function()
+    if sv.running then
+      GW.StopList()
+    else
+      GW.RunList()
+    end
+  end)
 
-  -- input with a short label above and grey example text inside while it's empty
+  --- An input with a short label above and grey example text inside while it is empty.
+  ---@param w number width
+  ---@param x number left offset in the tab
+  ---@param label string
+  ---@param placeholder string
+  ---@return table editBox
   local function box(w, x, label, placeholder)
     local b = CreateFrame("EditBox", nil, view, "InputBoxTemplate")
-    b:SetSize(w, 22); b:SetPoint("TOPLEFT", x, -52); b:SetAutoFocus(false)
-    b.label = fs(view, "GameFontNormalSmall", "LEFT"); b.label:SetPoint("BOTTOMLEFT", b, "TOPLEFT", -4, 5); b.label:SetText(label)
-    b.placeholder = fs(b, "GameFontDisable", "LEFT"); b.placeholder:SetPoint("LEFT", 2, 0); b.placeholder:SetText(placeholder)
+    b:SetSize(w, 22)
+    b:SetPoint("TOPLEFT", x, -52)
+    b:SetAutoFocus(false)
+    b.label = fs(view, "GameFontNormalSmall", "LEFT")
+    b.label:SetPoint("BOTTOMLEFT", b, "TOPLEFT", -4, 5)
+    b.label:SetText(label)
+    b.placeholder = fs(b, "GameFontDisable", "LEFT")
+    b.placeholder:SetPoint("LEFT", 2, 0)
+    b.placeholder:SetText(placeholder)
     b:SetScript("OnTextChanged", function(self) self.placeholder:SetShown((self:GetText() or "") == "") end)
     b:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     return b
@@ -784,67 +1065,112 @@ local function build(parent)
   view.addMax = box(110, X + 324, "Max price", "75c, 2g or 80%")
   view.addWant = box(60, X + 452, "Want", "20")
   view.addWant:SetNumeric(true)
-  view.add = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
-  view.add:SetSize(100, 22); view.add:SetPoint("TOPLEFT", X + 524, -52); view.add:SetText("Add Item")
+  view.add = UI.Button(view, "Add Item", 100, 22)
+  view.add:SetPoint("TOPLEFT", X + 524, -52)
+  --- Adds the typed item to the selected list, clears the boxes and checks the new entry.
   local function doAdd()
     local e, err = GW.AddToList(view.addBox:GetText(), view.addMax:GetText(), view.addWant:GetText())
     if not e then return toast(err, GW.SIGNAL_ORANGE) end
-    view.addBox:SetText(""); view.addMax:SetText(""); view.addWant:SetText("")
+    view.addBox:SetText("")
+    view.addMax:SetText("")
+    view.addWant:SetText("")
     view.addBox:ClearFocus()
     toast("Added " .. e.name .. ".", GW.SIGNAL_BLUE)
     GW.CheckEntry(e)
     render()
   end
   view.add:SetScript("OnClick", doAdd)
-  for _, b in ipairs({ view.addBox, view.addMax, view.addWant }) do b:SetScript("OnEnterPressed", doAdd) end
+  for _, b in ipairs({ view.addBox, view.addMax, view.addWant }) do
+    b:SetScript("OnEnterPressed", doAdd)
+  end
 
-  local cols = { { "Item", X }, { "Max price", X + 210 }, { "Want", X + 310 }, { "Found", X + 360 }, { "Action", X + 566 } }
+  local cols =
+    { { "Item", X }, { "Max price", X + 210 }, { "Want", X + 310 }, { "Found", X + 360 }, { "Action", X + 566 } }
   for _, c in ipairs(cols) do
-    local f = fs(view, "GameFontDisableSmall", "LEFT"); f:SetPoint("TOPLEFT", c[2], -86); f:SetText(c[1])
+    local f = fs(view, "GameFontDisableSmall", "LEFT")
+    f:SetPoint("TOPLEFT", c[2], -86)
+    f:SetText(c[1])
   end
   local tbl = CreateFrame("Frame", nil, view)
-  tbl:SetPoint("TOPLEFT", X - 4, -100); tbl:SetSize(730, ROWS * ROW_H)
+  tbl:SetPoint("TOPLEFT", X - 4, -100)
+  tbl:SetSize(730, ROWS * ROW_H)
   tbl:EnableMouseWheel(true)
-  tbl:SetScript("OnMouseWheel", function(_, delta) view.offset = (view.offset or 0) - delta; render() end)
+  tbl:SetScript("OnMouseWheel", function(_, delta)
+    view.offset = (view.offset or 0) - delta
+    render()
+  end)
   view.rows = {}
   for i = 1, ROWS do
     local row = CreateFrame("Frame", nil, tbl)
-    row:SetSize(730, ROW_H); row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
-    if i % 2 == 0 then local bg = row:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetColorTexture(1, 1, 1, 0.03) end
-    row.name = fs(row, "GameFontHighlight", "LEFT"); row.name:SetPoint("LEFT", 4, 0); row.name:SetWidth(200); row.name:SetWordWrap(false)
-    row.max = fs(row, "GameFontHighlightSmall", "LEFT"); row.max:SetPoint("LEFT", 214, 0)
-    row.want = fs(row, "GameFontHighlightSmall", "LEFT"); row.want:SetPoint("LEFT", 314, 0)
-    row.found = fs(row, "GameFontHighlightSmall", "LEFT"); row.found:SetPoint("LEFT", 364, 0); row.found:SetWidth(196); row.found:SetWordWrap(true)
+    row:SetSize(730, ROW_H)
+    row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
+    UI.Stripe(row, i)
+    row.name = fs(row, "GameFontHighlight", "LEFT")
+    row.name:SetPoint("LEFT", 4, 0)
+    row.name:SetWidth(200)
+    row.name:SetWordWrap(false)
+    row.max = fs(row, "GameFontHighlightSmall", "LEFT")
+    row.max:SetPoint("LEFT", 214, 0)
+    row.want = fs(row, "GameFontHighlightSmall", "LEFT")
+    row.want:SetPoint("LEFT", 314, 0)
+    row.found = fs(row, "GameFontHighlightSmall", "LEFT")
+    row.found:SetPoint("LEFT", 364, 0)
+    row.found:SetWidth(196)
+    row.found:SetWordWrap(true)
     row.action = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.action:SetSize(136, 22); row.action:SetPoint("LEFT", 566, 0)
+    row.action:SetSize(136, 22)
+    row.action:SetPoint("LEFT", 566, 0)
     row.action:SetScript("OnClick", function()
       local e, r = row.e, row.e and sv.results[row.e]
       if not e then return end
-      if (sv.buy and sv.buy.entry == e) or (r and r.kind == "commodity") then buyClick(e) else showInBuyTab(e) end
+      if (sv.buy and sv.buy.entry == e) or (r and r.kind == "commodity") then
+        buyClick(e)
+      else
+        showInBuyTab(e)
+      end
     end)
     row.remove = CreateFrame("Button", nil, row, "UIPanelCloseButton")
-    row.remove:SetSize(22, 22); row.remove:SetPoint("LEFT", 704, 0)
+    row.remove:SetSize(22, 22)
+    row.remove:SetPoint("LEFT", 704, 0)
     row.remove:SetScript("OnClick", function()
       local list = selectedList()
       for k, x in ipairs(list and list.entries or {}) do
-        if x == row.e then table.remove(list.entries, k) break end
+        if x == row.e then
+          table.remove(list.entries, k)
+          break
+        end
       end
       if sv.buy and sv.buy.entry == row.e then cancelBuy() end
       render()
     end)
     view.rows[i] = row
   end
-  view.empty = fs(view, "GameFontDisable", "CENTER"); view.empty:SetPoint("TOPLEFT", X, -150); view.empty:SetWidth(700)
+  view.empty = fs(view, "GameFontDisable", "CENTER")
+  view.empty:SetPoint("TOPLEFT", X, -150)
+  view.empty:SetWidth(700)
   view.empty:SetText("Add the items you buy often, with the most you'd pay. Run List checks them all in one go.")
-  view.toast = fs(view, "GameFontHighlightSmall", "LEFT"); view.toast:SetPoint("BOTTOMLEFT", X, 34); view.toast:SetWidth(720)
-  local note = fs(view, "GameFontDisableSmall", "LEFT"); note:SetPoint("BOTTOMLEFT", X, 12); note:SetWidth(720)
-  note:SetText("Buying takes two clicks: Buy asks the auction house for the exact price, then Confirm buys. Gear: Show puts it in Blizzard's list to buy there.")
+  view.toast = fs(view, "GameFontHighlightSmall", "LEFT")
+  view.toast:SetPoint("BOTTOMLEFT", X, 34)
+  view.toast:SetWidth(720)
+  local note = fs(view, "GameFontDisableSmall", "LEFT")
+  note:SetPoint("BOTTOMLEFT", X, 12)
+  note:SetWidth(720)
+  note:SetText(
+    "Buying takes two clicks: Buy asks the auction house for the exact price, then Confirm buys. Gear: Show puts it in Blizzard's list to buy there."
+  )
 end
 
 -- SHOP-7: Shift-click an item (bags, links) while the Shopping tab is open to fill the Item box.
 if hooksecurefunc and HandleModifiedItemClick then
   hooksecurefunc("HandleModifiedItemClick", function(link)
-    if view and view:IsVisible() and view.addBox and IsShiftKeyDown() and type(link) == "string" and link:find("item:") then
+    if
+      view
+      and view:IsVisible()
+      and view.addBox
+      and IsShiftKeyDown()
+      and type(link) == "string"
+      and link:find("item:")
+    then
       view.addBox:SetText(link)
       view.addMax:SetFocus()
     end
@@ -852,22 +1178,40 @@ if hooksecurefunc and HandleModifiedItemClick then
 end
 
 GW.ShopView = {}
+
+--- Shows the Shopping tab, building it inside `parent` the first time.
+---@param parent table tab content frame
 function GW.ShopView.Show(parent)
   if not view then build(parent) end
   view:Show()
   render()
 end
+
+--- Hides the Shopping tab, stops a running list and cancels a pending purchase.
 function GW.ShopView.Hide()
   if view then view:Hide() end
   GW.StopList()
   cancelBuy()
 end
+
+--- The tab state and frame, for debugging.
+---@return GoldwrightShoppingState sv
+---@return table|nil view
 function GW.ShopView.Debug() return sv, view end
 
 local events = CreateFrame("Frame")
-for _, e in ipairs({ "COMMODITY_SEARCH_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_ADDED", "ITEM_SEARCH_RESULTS_UPDATED",
-  "ITEM_SEARCH_RESULTS_ADDED", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "COMMODITY_PRICE_UPDATED", "COMMODITY_PRICE_UNAVAILABLE",
-  "COMMODITY_PURCHASE_SUCCEEDED", "COMMODITY_PURCHASE_FAILED", "AUCTION_HOUSE_CLOSED" }) do
+for _, e in ipairs({
+  "COMMODITY_SEARCH_RESULTS_UPDATED",
+  "COMMODITY_SEARCH_RESULTS_ADDED",
+  "ITEM_SEARCH_RESULTS_UPDATED",
+  "ITEM_SEARCH_RESULTS_ADDED",
+  "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED",
+  "COMMODITY_PRICE_UPDATED",
+  "COMMODITY_PRICE_UNAVAILABLE",
+  "COMMODITY_PURCHASE_SUCCEEDED",
+  "COMMODITY_PURCHASE_FAILED",
+  "AUCTION_HOUSE_CLOSED",
+}) do
   pcall(events.RegisterEvent, events, e)
 end
 events:SetScript("OnEvent", function(_, event, a1, a2)

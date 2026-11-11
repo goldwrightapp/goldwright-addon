@@ -1,8 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Help with installing and using Goldwright
-    url: https://goldwright.app
-    about: Install steps, how the prices work and answers to common questions.
+  - name: Questions and answers (FAQ)
+    url: https://goldwright.app/faq
+    about: No prices in tooltips, old data, regions and rulesets, Blackwater, selling. Check here first.
+  - name: Install steps
+    url: https://goldwright.app/install
+    about: Installing Goldwright and Goldwright Data.
   - name: Support Goldwright
     url: https://goldwright.app/support
     about: Goldwright is free and funded by tips.

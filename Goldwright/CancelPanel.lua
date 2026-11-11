@@ -1,47 +1,84 @@
--- Cancel tab (requirements CXL-1..7): your auctions with "Lowest" / "Undercut" status from one
--- search per distinct item (throttle-aware, with progress), the cancel cost per row, one cancel per
--- click, "Cancel next undercut" (button and key binding) and "Repost in Sell".
--- Lives inside the Goldwright panel (SellPanel.lua switches tabs and forwards events here).
+--- My Auctions (cancel) tab (CXL-1..7): your auctions with "Lowest" / "Undercut" status from one search per
+--- distinct item (throttle-aware, with progress), the cancel cost per row, one cancel per click,
+--- "Cancel next undercut" (button and key binding) and "Repost in Sell".
+--- Lives inside the Goldwright panel: SellPanel.lua switches tabs and forwards events here.
 local _, GW = ...
 
 local ROWS, ROW_H = 12, 28
-local CHECK_TIMEOUT = 6     -- seconds to wait for one item's search
+local CHECK_TIMEOUT = 6 -- seconds to wait for one item's search
 local CANCEL_TIMEOUT = 8
-local GREY = { 0.70, 0.70, 0.72 }
-local WHITE = { 1, 1, 1 }
-local SORTS = { { sortOrder = 0, reverseSort = false } } -- replaced with Enum values when the frame is built
+local UI = GW.UI
+local fs, setColor, qualityColor = UI.FontString, UI.SetColor, UI.QualityColor
+local GREY = UI.GREY
 
 local view
+
+--- One of your auctions, as shown in a row.
+---@class CancelRow
+---@field id number auction id
+---@field itemKey table the auction's item key
+---@field keyStr string item key as a string, used to share one search between rows of the same item
+---@field itemID number
+---@field name string
+---@field icon number texture file id
+---@field quality number?
+---@field link string? item link, for the tooltip
+---@field qty number quantity in the auction
+---@field unit number? buyout per unit; nil for bid-only auctions
+---@field bidOnly boolean no buyout
+---@field sold boolean sold, money on its way by mail
+---@field isCommodity boolean?
+---@field timeLeft string time left as text
+---@field cancelling boolean? a cancel was sent and has no answer yet
+---@field cancelAt number? GetTime() when the cancel was sent
+---@field status string "undercut", "lowest", "sold", "bid", "unknown", "checking" or "unchecked"
+---@field now number? cheapest real price of other sellers
+---@field bait number? cheaper bait price that was ignored
+
+--- One item waiting for (or running) its check search.
+---@class CancelCheck
+---@field keyStr string
+---@field itemKey table
+---@field name string
+
+--- State of the My Auctions tab.
+---@class CancelViewState
+---@field list CancelRow[] your auctions
+---@field offset number scroll offset into list
+---@field results table<string, { listings: table[], unknown: boolean?, at: number }> search results by keyStr
+---@field queue CancelCheck[] items still to check
+---@field checked number checks finished in this round
+---@field total number checks in this round
+---@field cancelled table<number, boolean> auction ids cancelled since login or /reload (kept out of the list)
+---@field current CancelCheck? the check whose search is running
+---@field token table? identifies the running check, so its timeout can tell it is still current
+---@field waiting boolean? waiting for the search throttle
+---@field loaded boolean? the owned-auctions list has arrived
+---@field refreshing boolean? the Refresh button asked for the list: re-check everything
+---@field returning boolean? the tab was just opened: re-check old results
+---@field lastCancel CancelRow? the auction we last asked to cancel
+---@field repost CancelRow? the last cancelled auction, for "Repost in Sell"
 local cv = { list = {}, offset = 0, results = {}, queue = {}, checked = 0, total = 0, cancelled = {} }
 local STALE = 300 -- seconds before a check counts as old when you come back to the tab
 
-local function fs(parent, template, justify)
-  local f = parent:CreateFontString(nil, "ARTWORK", template or "GameFontHighlight")
-  if justify then f:SetJustifyH(justify) end
-  return f
-end
-local function setColor(f, c) f:SetTextColor(c[1], c[2], c[3]) end
+--- Shows a short message at the bottom of the tab.
+---@param text string
+---@param color number[]? {r, g, b}
+local function toast(text, color) UI.Toast(view, text, color) end
 
-local function toast(text, color)
-  if not view then return end
-  view.toast:SetText(text or "")
-  setColor(view.toast, color or WHITE)
-end
-
+--- An item key as "itemID:itemLevel:itemSuffix:battlePetSpeciesID".
+---@param k table? item key
+---@return string
 local function keyString(k)
   if not k then return "?" end
   return table.concat({ k.itemID or 0, k.itemLevel or 0, k.itemSuffix or 0, k.battlePetSpeciesID or 0 }, ":")
 end
 
-local function qualityColor(q)
-  local c = ITEM_QUALITY_COLORS and q and ITEM_QUALITY_COLORS[q]
-  return c and { c.r, c.g, c.b } or WHITE
-end
-
 ---------------------------------------------------------------------------
 -- data
 ---------------------------------------------------------------------------
--- CXL-1: read the owned auctions the client has (after QueryOwnedAuctions).
+
+--- Reads the owned auctions the client has (after QueryOwnedAuctions) into cv.list (CXL-1).
 local function readOwned()
   local list = {}
   local n = C_AuctionHouse.GetNumOwnedAuctions and C_AuctionHouse.GetNumOwnedAuctions() or 0
@@ -53,32 +90,58 @@ local function readOwned()
       local isCommodity = info and info.isCommodity
       local qty = a.quantity or 1
       -- buyoutAmount: per unit for commodities, per auction for items (logged so we can verify in game)
-      local unit = a.buyoutAmount and (isCommodity and a.buyoutAmount or math.floor(a.buyoutAmount / math.max(1, qty) + 0.5))
+      local unit = a.buyoutAmount
+        and (isCommodity and a.buyoutAmount or math.floor(a.buyoutAmount / math.max(1, qty) + 0.5))
       local sold = Enum and Enum.AuctionStatus and a.status == Enum.AuctionStatus.Sold
       list[#list + 1] = {
-        id = a.auctionID, itemKey = key, keyStr = keyString(key), itemID = key.itemID,
-        name = (a.itemLink and a.itemLink:match("%[(.-)%]")) or (info and info.itemName) or ("item " .. tostring(key.itemID)),
-        icon = (info and info.iconFileID) or (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(key.itemID)) or 134400,
-        quality = info and info.quality, link = a.itemLink,
-        qty = qty, unit = unit, bidOnly = not a.buyoutAmount, sold = sold, isCommodity = isCommodity,
+        id = a.auctionID,
+        itemKey = key,
+        keyStr = keyString(key),
+        itemID = key.itemID,
+        name = (a.itemLink and a.itemLink:match("%[(.-)%]")) or (info and info.itemName) or ("item " .. tostring(
+          key.itemID
+        )),
+        icon = (info and info.iconFileID)
+          or (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(key.itemID))
+          or 134400,
+        quality = info and info.quality,
+        link = a.itemLink,
+        qty = qty,
+        unit = unit,
+        bidOnly = not a.buyoutAmount,
+        sold = sold,
+        isCommodity = isCommodity,
         timeLeft = GW.TimeLeftText(a.timeLeftSeconds, a.timeLeft),
       }
       if i <= 3 then
-        GW.Log("owned %d: %s qty=%s buyout=%s commodity=%s status=%s", i, list[#list].name, tostring(qty), tostring(a.buyoutAmount), tostring(isCommodity), tostring(a.status))
+        GW.Log(
+          "owned %d: %s qty=%s buyout=%s commodity=%s status=%s",
+          i,
+          list[#list].name,
+          tostring(qty),
+          tostring(a.buyoutAmount),
+          tostring(isCommodity),
+          tostring(a.status)
+        )
       end
     end
   end
   -- keep the cancelling flag across re-reads
   local old = {}
-  for _, r in ipairs(cv.list) do old[r.id] = r end
+  for _, r in ipairs(cv.list) do
+    old[r.id] = r
+  end
   for _, r in ipairs(list) do
     local o = old[r.id]
-    if o and o.cancelling then r.cancelling, r.cancelAt = o.cancelling, o.cancelAt end
+    if o and o.cancelling then
+      r.cancelling, r.cancelAt = o.cancelling, o.cancelAt
+    end
   end
   cv.list = list
 end
 
--- CXL-2: status of every row from the cached search results.
+--- Sets the status of every row from the cached search results (CXL-2).
+---@return { undercut: number, lowest: number, unchecked: number } counts for the summary line
 local function computeStatuses()
   local counts = { undercut = 0, lowest = 0, unchecked = 0 }
   for _, r in ipairs(cv.list) do
@@ -114,6 +177,7 @@ local STATUS_TEXT = {
   unchecked = { "Not checked yet", GREY },
 }
 
+--- Redraws the rows, the progress line, the summary and the "Cancel Next Undercut" button.
 local function render()
   if not (view and view:IsShown()) then return end
   local counts = computeStatuses()
@@ -131,7 +195,8 @@ local function render()
       if r.status == "undercut" then
         text, color = "Undercut · now " .. GW.Money(r.now), GW.SIGNAL_ORANGE
       elseif r.status == "lowest" then
-        text, color = r.bait and ("Lowest real · bait at " .. GW.Money(r.bait) .. " ignored") or "Lowest", GW.SIGNAL_BLUE
+        text, color =
+          r.bait and ("Lowest real · bait at " .. GW.Money(r.bait) .. " ignored") or "Lowest", GW.SIGNAL_BLUE
       else
         text, color = STATUS_TEXT[r.status][1], STATUS_TEXT[r.status][2]
       end
@@ -142,7 +207,9 @@ local function render()
         row.cancel:Hide()
       else
         row.cancel:Show()
-        row.cancel:SetText(r.cancelling and "Cancelling…" or ("Cancel" .. (cost and cost > 0 and (" · " .. GW.Money(cost)) or "")))
+        row.cancel:SetText(
+          r.cancelling and "Cancelling…" or ("Cancel" .. (cost and cost > 0 and (" · " .. GW.Money(cost)) or ""))
+        )
         row.cancel:SetEnabled(not r.cancelling)
       end
     else
@@ -155,7 +222,8 @@ local function render()
     local w = GW.WaitText()
     progress = string.format("%s%s · checked %d of %d", w:sub(1, 1):upper(), w:sub(2), cv.checked, cv.total)
   elseif cv.total > 0 then
-    progress = string.format("Checked %d of %d · %d searches this minute", cv.checked, cv.total, GW.SearchesThisMinute())
+    progress =
+      string.format("Checked %d of %d · %d searches this minute", cv.checked, cv.total, GW.SearchesThisMinute())
   else
     progress = #cv.list > 0 and string.format("%d searches this minute", GW.SearchesThisMinute()) or ""
   end
@@ -171,7 +239,10 @@ local function render()
   if counts.undercut > 0 then parts[#parts + 1] = counts.undercut .. " undercut" end
   if counts.lowest > 0 then parts[#parts + 1] = counts.lowest .. " lowest" end
   if counts.unchecked > 0 then parts[#parts + 1] = counts.unchecked .. " not checked" end
-  view.summary:SetText(#parts > 0 and (table.concat(parts, " · ") .. ". One click cancels one auction; its deposit is not refunded.") or "")
+  view.summary:SetText(
+    #parts > 0 and (table.concat(parts, " · ") .. ". One click cancels one auction; its deposit is not refunded.")
+      or ""
+  )
   view.next:SetEnabled(GW.NextUndercut(cv.list) ~= nil)
 end
 
@@ -180,6 +251,10 @@ end
 ---------------------------------------------------------------------------
 local checkNext
 
+--- Stores the result of the running check and moves on to the next one.
+---@param k CancelCheck the check (ignored if it is no longer the running one)
+---@param listings table[]? the listings found
+---@param unknown boolean? true when the search gave no answer
 local function finishCheck(k, listings, unknown)
   if cv.current ~= k then return end
   cv.results[k.keyStr] = { listings = listings or {}, unknown = unknown, at = GetTime() }
@@ -189,6 +264,10 @@ local function finishCheck(k, listings, unknown)
   C_Timer.After(0.1, checkNext)
 end
 
+--- Reads the search results for a check.
+---@param k CancelCheck
+---@param final boolean the timeout fired: an empty result now counts as no answer
+---@param eventName string? for the log
 local function readFor(k, final, eventName)
   local list = GW.CollectSearchResults(k.itemKey.itemID, k.itemKey)
   GW.Log("cancel check %s for %s: %d listings", eventName or "read", k.name, #list)
@@ -200,6 +279,7 @@ local function readFor(k, final, eventName)
   finishCheck(k, list)
 end
 
+--- Starts the next queued search when the throttle allows, else retries later.
 checkNext = function()
   if not (view and view:IsShown()) or cv.current then return end
   local k = cv.queue[1]
@@ -212,7 +292,7 @@ checkNext = function()
     if not cv.waiting then GW.Log("cancel check waiting: %s", tostring(GW.SearchBlocked())) end
     cv.waiting = true
     render()
-    C_Timer.After(2, checkNext)
+    C_Timer.After(GW.SEARCH_RETRY, checkNext)
     return
   end
   table.remove(cv.queue, 1)
@@ -221,23 +301,29 @@ checkNext = function()
   local token = {}
   cv.token = token
   GW.NoteSearch()
-  C_AuctionHouse.SendSearchQuery(k.itemKey, SORTS, true)
+  C_AuctionHouse.SendSearchQuery(k.itemKey, GW.PriceSorts(), true)
   render()
   C_Timer.After(CHECK_TIMEOUT, function()
     if cv.token == token and cv.current == k then readFor(k, true, "timeout") end
   end)
 end
 
--- Queue one search per distinct item. mode "new": only items never checked (the game refreshes
--- the auction list after every post and cancel, and that must not cost searches); "stale": also
--- checks older than 5 minutes (coming back to the tab); "all": the Refresh button.
--- A check already running keeps going; new items join the queue.
+--- Queues one search per distinct item. A check already running keeps going; new items join the queue.
+---@param mode "new"|"stale"|"all" "new": only items never checked (the game refreshes the auction list after
+--- every post and cancel, and that must not cost searches); "stale": also checks older than 5 minutes
+--- (coming back to the tab); "all": the Refresh button
 local function startChecks(mode)
   local busy = cv.current ~= nil or #cv.queue > 0
-  if mode == "all" then cv.current, cv.token = nil, nil end
-  if mode == "all" or not busy then cv.queue, cv.checked, cv.total = {}, 0, 0 end
+  if mode == "all" then
+    cv.current, cv.token = nil, nil
+  end
+  if mode == "all" or not busy then
+    cv.queue, cv.checked, cv.total = {}, 0, 0
+  end
   local queued = {}
-  for _, k in ipairs(cv.queue) do queued[k.keyStr] = true end
+  for _, k in ipairs(cv.queue) do
+    queued[k.keyStr] = true
+  end
   if cv.current then queued[cv.current.keyStr] = true end
   for _, r in ipairs(cv.list) do
     local res = cv.results[r.keyStr]
@@ -253,6 +339,7 @@ local function startChecks(mode)
   checkNext()
 end
 
+--- Asks the server for your auctions (answered by OWNED_AUCTIONS_UPDATED); counts as a search.
 local function queryOwned()
   if not C_AuctionHouse.QueryOwnedAuctions then return end
   local sorts = { { sortOrder = Enum.AuctionHouseSortOrder.Name, reverseSort = false } }
@@ -263,6 +350,9 @@ end
 ---------------------------------------------------------------------------
 -- cancelling (CXL-4..7)
 ---------------------------------------------------------------------------
+
+--- Cancels one auction, after checking combat, whether it can be cancelled and the cancel cost.
+---@param r CancelRow?
 local function cancelRow(r)
   if not r or r.sold or r.cancelling then return end
   if InCombatLockdown and InCombatLockdown() then return toast("Not in combat.", GW.SIGNAL_ORANGE) end
@@ -282,15 +372,20 @@ local function cancelRow(r)
   C_Timer.After(CANCEL_TIMEOUT, function()
     if r.cancelling and r.cancelAt and GetTime() - r.cancelAt >= CANCEL_TIMEOUT - 0.1 then
       r.cancelling = nil
-      toast("No answer from the auction house for " .. r.name .. ". Refresh to see if it was cancelled.", GW.SIGNAL_ORANGE)
+      toast(
+        "No answer from the auction house for " .. r.name .. ". Refresh to see if it was cancelled.",
+        GW.SIGNAL_ORANGE
+      )
       render()
     end
   end)
 end
 
--- AUCTION_CANCELED: the id it carries didn't match the row's in game (2026-11-10), so fall back to
--- the auction we just asked to cancel. Cancelled ids stay out of the list even if the game's next
--- refresh still has them.
+--- AUCTION_CANCELED: removes the auction from the list and offers "Repost in Sell".
+--- The id the event carries didn't match the row's in game (2026-11-10), so this falls back to the
+--- auction we just asked to cancel. Cancelled ids stay out of the list even if the game's next refresh
+--- still has them.
+---@param auctionID any the event's argument
 local function onCancelled(auctionID)
   local mine = cv.lastCancel and cv.lastCancel.cancelling and cv.lastCancel or nil
   GW.Log("AUCTION_CANCELED arg=%s (%s), ours=%s", tostring(auctionID), type(auctionID), tostring(mine and mine.id))
@@ -311,25 +406,32 @@ local function onCancelled(auctionID)
   render()
 end
 
--- CXL-6 (button and key binding): cancel the first undercut auction in the list.
+--- Cancels the first undercut auction in the list (CXL-6: button and key binding).
 function GW.CancelNextUndercut()
   if not (view and view:IsShown()) then return end
   local r = GW.NextUndercut(cv.list)
-  if r then cancelRow(r) else toast("No undercut auctions left.", GREY) end
+  if r then
+    cancelRow(r)
+  else
+    toast("No undercut auctions left.", GREY)
+  end
 end
 
 ---------------------------------------------------------------------------
 -- construction
 ---------------------------------------------------------------------------
+
+--- Creates the tab's frames: header, Refresh, column titles, rows and the bottom bar.
+---@param parent table the panel's inset frame
 local function build(parent)
-  SORTS = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
   view = CreateFrame("Frame", nil, parent)
   view:SetAllPoints()
 
-  local h = fs(view, "GameFontNormal", "LEFT"); h:SetPoint("TOPLEFT", 12, -8); h:SetText("Your auctions")
-  view.progress = fs(view, "GameFontDisableSmall", "LEFT"); view.progress:SetPoint("LEFT", h, "RIGHT", 12, 0)
-  local refresh = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
-  refresh:SetSize(90, 22); refresh:SetPoint("TOPRIGHT", -12, -4); refresh:SetText("Refresh")
+  local h = UI.Header(view, "Your auctions", 12, -8)
+  view.progress = fs(view, "GameFontDisableSmall", "LEFT")
+  view.progress:SetPoint("LEFT", h, "RIGHT", 12, 0)
+  local refresh = UI.Button(view, "Refresh", 90, 22)
+  refresh:SetPoint("TOPRIGHT", -12, -4)
   refresh:SetScript("OnClick", function()
     toast("")
     cv.refreshing = true
@@ -338,7 +440,9 @@ local function build(parent)
 
   local cols = { { "Item", 12 }, { "Your price", 380 }, { "Time left", 500 }, { "Status", 600 }, { "Action", 832 } }
   for _, c in ipairs(cols) do
-    local f = fs(view, "GameFontDisableSmall", "LEFT"); f:SetPoint("TOPLEFT", c[2], -34); f:SetText(c[1])
+    local f = fs(view, "GameFontDisableSmall", "LEFT")
+    f:SetPoint("TOPLEFT", c[2], -34)
+    f:SetText(c[1])
   end
 
   local list = CreateFrame("Frame", nil, view)
@@ -355,17 +459,26 @@ local function build(parent)
     row:SetSize(970, ROW_H)
     row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
     row:EnableMouse(true)
-    if i % 2 == 0 then
-      local bg = row:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints(); bg:SetColorTexture(1, 1, 1, 0.03)
-    end
-    row.icon = row:CreateTexture(nil, "ARTWORK"); row.icon:SetSize(22, 22); row.icon:SetPoint("LEFT", 6, 0)
+    UI.Stripe(row, i)
+    row.icon = row:CreateTexture(nil, "ARTWORK")
+    row.icon:SetSize(22, 22)
+    row.icon:SetPoint("LEFT", 6, 0)
     row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    row.name = fs(row, "GameFontHighlight", "LEFT"); row.name:SetPoint("LEFT", 34, 0); row.name:SetWidth(330); row.name:SetWordWrap(false)
-    row.price = fs(row, "GameFontHighlight", "LEFT"); row.price:SetPoint("LEFT", 374, 0)
-    row.time = fs(row, "GameFontHighlightSmall", "LEFT"); row.time:SetPoint("LEFT", 494, 0)
-    row.status = fs(row, "GameFontHighlightSmall", "LEFT"); row.status:SetPoint("LEFT", 594, 0); row.status:SetWidth(230); row.status:SetWordWrap(false)
+    row.name = fs(row, "GameFontHighlight", "LEFT")
+    row.name:SetPoint("LEFT", 34, 0)
+    row.name:SetWidth(330)
+    row.name:SetWordWrap(false)
+    row.price = fs(row, "GameFontHighlight", "LEFT")
+    row.price:SetPoint("LEFT", 374, 0)
+    row.time = fs(row, "GameFontHighlightSmall", "LEFT")
+    row.time:SetPoint("LEFT", 494, 0)
+    row.status = fs(row, "GameFontHighlightSmall", "LEFT")
+    row.status:SetPoint("LEFT", 594, 0)
+    row.status:SetWidth(230)
+    row.status:SetWordWrap(false)
     row.cancel = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.cancel:SetSize(130, 22); row.cancel:SetPoint("LEFT", 826, 0)
+    row.cancel:SetSize(130, 22)
+    row.cancel:SetPoint("LEFT", 826, 0)
     row.cancel:SetScript("OnClick", function() cancelRow(row.r) end)
     row:SetScript("OnEnter", function(self)
       if not (self.r and self.r.link) then return end
@@ -377,24 +490,34 @@ local function build(parent)
     view.rows[i] = row
   end
 
-  view.empty = fs(view, "GameFontDisable", "CENTER"); view.empty:SetPoint("CENTER", 0, 20)
+  view.empty = fs(view, "GameFontDisable", "CENTER")
+  view.empty:SetPoint("CENTER", 0, 20)
 
-  view.summary = fs(view, "GameFontHighlightSmall", "LEFT"); view.summary:SetPoint("BOTTOMLEFT", 12, 40)
-  view.toast = fs(view, "GameFontHighlightSmall", "LEFT"); view.toast:SetPoint("BOTTOMLEFT", 12, 16); view.toast:SetWidth(560)
-  view.repost = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
-  view.repost:SetSize(130, 24); view.repost:SetPoint("BOTTOMLEFT", 580, 10); view.repost:SetText("Repost in Sell")
-  view.repost:SetScript("OnClick", function() if cv.repost and GW.SellItem then GW.SellItem(cv.repost.itemID) end end)
+  view.summary = fs(view, "GameFontHighlightSmall", "LEFT")
+  view.summary:SetPoint("BOTTOMLEFT", 12, 40)
+  view.toast = fs(view, "GameFontHighlightSmall", "LEFT")
+  view.toast:SetPoint("BOTTOMLEFT", 12, 16)
+  view.toast:SetWidth(560)
+  view.repost = UI.Button(view, "Repost in Sell", 130, 24)
+  view.repost:SetPoint("BOTTOMLEFT", 580, 10)
+  view.repost:SetScript("OnClick", function()
+    if cv.repost and GW.SellItem then GW.SellItem(cv.repost.itemID) end
+  end)
   view.repost:Hide()
-  view.next = CreateFrame("Button", nil, view, "UIPanelButtonTemplate")
-  view.next:SetSize(220, 26); view.next:SetPoint("BOTTOMRIGHT", -12, 10); view.next:SetText("Cancel Next Undercut")
+  view.next = UI.Button(view, "Cancel Next Undercut", 220, 26)
+  view.next:SetPoint("BOTTOMRIGHT", -12, 10)
   view.next:SetScript("OnClick", GW.CancelNextUndercut)
 end
 
 ---------------------------------------------------------------------------
 -- interface for SellPanel.lua
 ---------------------------------------------------------------------------
+
+--- The My Auctions tab, shown and hidden by the panel's tab bar (SellPanel.lua).
 GW.CancelView = {}
 
+--- Shows the tab (building it on first use) and asks for your auctions.
+---@param parent table the panel's inset frame
 function GW.CancelView.Show(parent)
   if not view then build(parent) end
   view:Show()
@@ -404,11 +527,16 @@ function GW.CancelView.Show(parent)
   queryOwned()
 end
 
+--- Hides the tab and drops the running and queued checks.
 function GW.CancelView.Hide()
   if view then view:Hide() end
   cv.current, cv.token, cv.queue, cv.waiting = nil, nil, {}, false
 end
 
+--- Handles an auction house event while the tab is shown.
+---@param event string
+---@param arg1 any first event argument
+---@param arg2 any second event argument (the message text for UI_ERROR_MESSAGE)
 function GW.CancelView.OnEvent(event, arg1, arg2)
   if not (view and view:IsShown()) then return end
   if event == "OWNED_AUCTIONS_UPDATED" or event == "ITEM_KEY_ITEM_INFO_RECEIVED" then
@@ -439,7 +567,7 @@ function GW.CancelView.OnEvent(event, arg1, arg2)
   end
 end
 
--- Events only the Cancel tab needs; SellPanel.lua forwards everything while this tab is shown.
+-- Events only the Cancel tab needs; SellPanel.lua forwards everything else while this tab is shown.
 local extra = CreateFrame("Frame")
 for _, e in ipairs({ "OWNED_AUCTIONS_UPDATED", "AUCTION_CANCELED", "ITEM_KEY_ITEM_INFO_RECEIVED" }) do
   pcall(extra.RegisterEvent, extra, e)
@@ -448,5 +576,7 @@ extra:SetScript("OnEvent", function(_, event, arg1, arg2)
   if GW.activeTab == "cancel" then GW.CancelView.OnEvent(event, arg1, arg2) end
 end)
 
--- For tests and /dump: the tab's state and frame.
+--- For tests and /dump: the tab's state and frame.
+---@return CancelViewState cv
+---@return table|nil view
 function GW.CancelView.Debug() return cv, view end

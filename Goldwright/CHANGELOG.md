@@ -1,13 +1,11 @@
 # Goldwright changelog
 
-## 0.1.0-alpha
+## 0.2.0-alpha
 
-First alpha of Goldwright: auction house prices for WoW Forever.
-
-- **Tooltips:** the market price, the normal price over the last 7 or 30 days, a "good time to buy / sell" hint, and how many sell per day.
-- **Sell:** pick a bag item and get a fast, typical or patient price with the reasons spelled out, then post from a queue.
-- **My auctions:** see your listings and cancel the ones that were undercut.
-- **Scan:** a full auction house scan updates prices for your realm between data updates.
-- **Shopping lists:** build lists, import and export them, and buy commodities in two clicks.
-- **Settings, launcher and a short welcome** for first-time users.
-- Comes with Goldwright Data, the daily price data for every WoW Forever region. Add-on managers install and update it for you.
+- **The real auction house cut:** when you open your mailbox, Goldwright reads the invoices of your sold auctions and learns each house's actual cut (Alliance, Horde, Blackwater). Profit and "you receive" numbers use it from then on; `/gw status` shows it.
+- **Report a bug in one paste:** `/gw bug` (or Settings → Report a Bug) opens a ready-made report with your versions, region, ruleset, settings and Goldwright's recent log. Press Ctrl+C and paste it into the Discord or GitHub.
+- **Selling at Blackwater:** in Booty Bay, Gadgetzan and Everlook the Sell tab and shopping lists use Blackwater's prices and its 15% cut.
+- **Crafting:** a Goldwright window next to your profession window shows what each recipe costs, what it sells for and the profit per craft. Prices come from your faction's auction house; the Prices button switches to Blackwater, and recipes that really sell for more there say so. Thread, dye, salt and other vendor supplies count at the vendor price, and Goldwright learns the prices of anything vendors you visit sell. Drag the window anywhere and it opens there next time (`/gw craft reset` puts it back).
+- **Goldwright Data comes with Goldwright:** installing the add-on in the CurseForge app or WowUp now installs the daily price data too.
+- The launcher shows the website, **goldwright.app**.
+- Behind the scenes: shared interface code and tidier documentation. Nothing else changes in game.
