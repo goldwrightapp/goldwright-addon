@@ -222,7 +222,11 @@ local function build()
     "ttNormal",
     "The 7-day normal price, and a line when the cheapest listing is well above or below it."
   )
-  check("Trend and sell rate", "ttTrend", "7-day trend against 30 days, and estimated units sold per day.")
+  check(
+    "Trend and sell rate",
+    "ttTrend",
+    "7-day trend against 30 days, and units sold per day (proven sales, else an estimate)."
+  )
   check("Other houses", "ttOthers")
   check("Blackwater pays more", "ttBetter", "Only shown with real depth and proven buyers at the other house.")
   check("Vendor comparison", "ttVendor")

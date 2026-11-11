@@ -288,8 +288,8 @@ local function renderDetail()
   if p.profit then text = text .. " per craft" end
   if cur then text = text .. ", plus " .. cur end
   setLine(d.lines.profit, text, color)
-  if p.soldPerDay then
-    setLine(d.lines.rate, GW.SoldText(p.soldPerDay) .. " (est.)")
+  if p.rateText then
+    setLine(d.lines.rate, p.rateText)
   else
     setLine(d.lines.rate, "Unknown", GREY)
   end

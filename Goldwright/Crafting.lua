@@ -61,6 +61,7 @@ local CURRENCY_NAMES = { [3402] = "Merchant's Favor" }
 ---@field net number|nil value - cut
 ---@field profit number|nil net - cost (nil when anything is unknown)
 ---@field soldPerDay number|nil estimated sales per day of the output at outputSide
+---@field rateText string|nil sales per day of the output there (GW.SellRateText: proven, else estimate)
 ---@field noOutput boolean|nil the recipe makes no item to sell
 ---@field hint GoldwrightCraftHint|nil the other house really pays more for the output
 
@@ -283,6 +284,7 @@ function GW.PriceRecipe(recipe, side)
   local data = d and d[side]
   local unit = data and num(data.mv)
   p.soldPerDay = data and data.soldPerDay
+  p.rateText = GW.SellRateText(data)
   if not unit then return p end
   p.outputUnit, p.outputSide = unit, side
   p.value = unit * p.avgQty

@@ -293,8 +293,8 @@ local function signal(here, normal)
   return nil
 end
 
---- TT-5: "7-day +6% · sells ~420/day (est.)"; the sell rate reads "n/a" until the server has
---- enough history.
+--- TT-5: "7-day +6% · sold ~420/day" (proven sales; gear and unproven items show the estimate,
+--- "sells ~4.2/day (est.)"); the sell rate reads "n/a" until the server has enough history.
 ---@param here GoldwrightItemSide
 ---@return string|nil text nil when neither part is known
 local function trend(here)
@@ -303,10 +303,9 @@ local function trend(here)
     local t = math.floor((here.avg7 / here.avg30 - 1) * 100 + 0.5)
     parts[1] = t == 0 and "7-day flat" or string.format("7-day %s%d%%", t > 0 and "+" or "-", math.abs(t))
   end
-  local n = here.soldPerDay
-  if n then
-    parts[#parts + 1] = n >= 10 and string.format("sells ~%s/day (est.)", count(n))
-      or string.format("sells ~%.1f/day (est.)", n)
+  local rate = GW.SellRateText(here)
+  if rate then
+    parts[#parts + 1] = rate
   elseif #parts > 0 then
     parts[#parts + 1] = "sells n/a"
   end

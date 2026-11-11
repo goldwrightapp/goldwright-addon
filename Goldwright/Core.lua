@@ -494,6 +494,28 @@ function GW.SoldText(perDay)
     or string.format("~%.1f sold/day", perDay)
 end
 
+--- Sales per day to show for one house: proven sales (partial buys and sweeps) when there are any,
+--- else the estimate (listings gone early, which may include cancels). Gear never has proven sales:
+--- each piece is its own auction, so it always shows the estimate.
+---@param here GoldwrightItemSide|nil
+---@return number|nil perDay
+---@return boolean proven
+function GW.SellRate(here)
+  if not here then return nil, false end
+  if (here.boughtPerDay or 0) > 0 then return here.boughtPerDay, true end
+  return here.soldPerDay, false
+end
+
+--- "sold ~16,526/day" (proven) or "sells ~4.2/day (est.)".
+---@param here GoldwrightItemSide|nil
+---@return string|nil text nil when no rate is known
+function GW.SellRateText(here)
+  local n, proven = GW.SellRate(here)
+  if not n then return nil end
+  local num = n >= 10 and GW.Number(math.floor(n + 0.5)) or string.format("%.1f", n)
+  return proven and string.format("sold ~%s/day", num) or string.format("sells ~%s/day (est.)", num)
+end
+
 --- Net per unit after the house's cut.
 ---@param side string house ("A", "H", "N"; unknown = 5% cut)
 ---@param price number price in copper
@@ -594,11 +616,8 @@ function GW.PriceLine(msg)
     parts[#parts + 1] = "none listed now"
   end
   if here.avg7 or here.avg30 then parts[#parts + 1] = "normal " .. GW.Money(here.avg7 or here.avg30) end
-  if here.soldPerDay then
-    local n = here.soldPerDay
-    parts[#parts + 1] = n >= 10 and string.format("sells ~%d/day (est.)", math.floor(n + 0.5))
-      or string.format("sells ~%.1f/day (est.)", n)
-  end
+  local rate = GW.SellRateText(here)
+  if rate then parts[#parts + 1] = rate end
   for _, side in ipairs({ "A", "H", "N" }) do
     if side ~= h.side and d[side] and d[side].mv then
       parts[#parts + 1] = GW.HOUSE_NAMES[side] .. " " .. GW.Money(d[side].mv)

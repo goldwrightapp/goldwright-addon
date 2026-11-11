@@ -2,7 +2,7 @@
 ## Title: Goldwright
 ## Notes: Auction house prices for WoW Forever. Alpha build.
 ## Author: Goldwright
-## Version: 0.2.0
+## Version: 0.2.1
 ## SavedVariables: GoldwrightDB, GoldwrightScans
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
 ## AddonCompartmentFunc: Goldwright_OnAddonCompartmentClick
