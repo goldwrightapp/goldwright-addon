@@ -12,7 +12,8 @@ local UI = GW.UI
 --- Longest report, in characters: Discord allows 2,000 per message, with room for what players add.
 GW.BUG_REPORT_MAX = 1900
 --- Where to paste it.
-GW.BUG_REPORT_WHERE = "#bug-reports on the Goldwright Discord, or github.com/goldwrightapp/goldwright-addon/issues"
+GW.BUG_REPORT_WHERE =
+  "#bug-reports on the Goldwright Discord (discord.gg/PX22TFh4UZ), or github.com/goldwrightapp/goldwright-addon/issues"
 
 --- Calls a C_AddOns function, or the old global of the same name on clients without C_AddOns.
 ---@param name string function name, e.g. "GetAddOnMetadata"

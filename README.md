@@ -20,21 +20,21 @@ Install it with an add-on manager, which also keeps the price data up to date:
 2. **Goldwright Data** comes with it. It holds the daily prices for every WoW Forever region, and your add-on manager updates it every day. If it doesn't appear, search for **Goldwright Data** and install it too.
 3. Log in and type `/gw` in chat.
 
-> **Alpha.** Goldwright is new and still changes quickly, so its files are released as *alpha*. In the CurseForge app, set Goldwright's release type to **Alpha** to see it and get updates.
+> **New.** Goldwright is new and still changes quickly. Questions, bugs and ideas are welcome on the [Goldwright Discord](https://discord.gg/PX22TFh4UZ).
 
 The `Goldwright/` folder in this repository is the add-on exactly as it is released. You don't need to download anything from here to play.
 
-More help, how the prices work and item prices for every realm: **[goldwright.app](https://goldwright.app)**.
+More help, how the prices work and item prices for every realm: **[goldwright.app](https://goldwright.app)**. Questions? Ask in **#help** on the [Goldwright Discord](https://discord.gg/PX22TFh4UZ).
 
 ## Found a bug?
 
-Please [open an issue](https://github.com/goldwrightapp/goldwright-addon/issues/new/choose) and pick **Bug report**. The form asks for:
+Type `/gw bug` in game, copy the report and paste it into **#bug-reports** on the [Goldwright Discord](https://discord.gg/PX22TFh4UZ). Or [open an issue](https://github.com/goldwrightapp/goldwright-addon/issues/new/choose) here and pick **Bug report**. The form asks for:
 
 - your Goldwright and Goldwright Data versions, and what `/gw status` prints (region, ruleset, faction, data pack)
 - where it happened (auction house, tooltip, sell panel, ...) and the steps to get there
 - a screenshot, and the Lua error text if there is one
 
-Ideas are welcome too: pick **Feature request**.
+Ideas are welcome too: post them in **#ideas** on Discord, or pick **Feature request** here.
 
 ## Support Goldwright
 
