@@ -9,6 +9,7 @@ local UI = GW.UI
 local fs, setColor = UI.FontString, UI.SetColor
 local GREY = UI.GREY
 local welcome
+local body -- the welcome's content, drawn over its dark inset
 
 --- One line on the data pack for the welcome panel, from what LoadPack found: installed (and how
 --- old), disabled, wrong schema, packs for another region only, or not installed.
@@ -53,11 +54,11 @@ end
 ---@param label string
 ---@return table value font string for the value
 local function row(y, label)
-  local l = fs(welcome, "GameFontHighlight", "LEFT")
+  local l = fs(body, "GameFontHighlight", "LEFT")
   l:SetPoint("TOPLEFT", 24, y)
   l:SetText(label)
   setColor(l, GREY)
-  local r = fs(welcome, "GameFontHighlight", "LEFT")
+  local r = fs(body, "GameFontHighlight", "LEFT")
   r:SetPoint("TOPLEFT", 120, y)
   r:SetWidth(360)
   return r
@@ -67,13 +68,22 @@ end
 local function create()
   welcome = UI.Window("GoldwrightWelcome", 500, 400, { title = "Goldwright", strata = "DIALOG", movable = true })
   welcome:SetPoint("CENTER", 0, 60)
-  if welcome.Inset then welcome.Inset:Hide() end
+  -- Keep the dark inset the other windows draw on, so the welcome is as opaque as they are. The
+  -- content is a child of the inset (or it would draw under it), sized to the whole window so the
+  -- offsets below are from the window's corner.
+  if welcome.Inset then
+    welcome.Inset:ClearAllPoints()
+    welcome.Inset:SetPoint("TOPLEFT", 8, -26)
+    welcome.Inset:SetPoint("BOTTOMRIGHT", -8, 8)
+  end
+  body = CreateFrame("Frame", nil, welcome.Inset or welcome)
+  body:SetAllPoints(welcome)
 
-  local t = fs(welcome, "GameFontNormalLarge", "LEFT")
+  local t = fs(body, "GameFontNormalLarge", "LEFT")
   t:SetPoint("TOPLEFT", 24, -36)
   t:SetText("Welcome to Goldwright")
   setColor(t, GW.GOLD)
-  local tag = fs(welcome, "GameFontHighlight", "LEFT")
+  local tag = fs(body, "GameFontHighlight", "LEFT")
   tag:SetPoint("TOPLEFT", 24, -58)
   tag:SetText("Auction house prices for WoW Forever.")
 
@@ -89,20 +99,20 @@ local function create()
   }
   local y = -196
   for i, text in ipairs(tips) do
-    local n = fs(welcome, "GameFontNormalLarge", "CENTER")
+    local n = fs(body, "GameFontNormalLarge", "CENTER")
     n:SetPoint("TOPLEFT", 24, y)
     n:SetText(tostring(i))
     setColor(n, GW.GOLD)
-    local f = fs(welcome, "GameFontHighlight", "LEFT")
+    local f = fs(body, "GameFontHighlight", "LEFT")
     f:SetPoint("TOPLEFT", 52, y)
     f:SetWidth(420)
     f:SetText(text)
     y = y - math.max(36, f:GetStringHeight() + 14)
   end
 
-  local ok = UI.Button(welcome, "Got It", 120, 26, function() welcome:Hide() end)
+  local ok = UI.Button(body, "Got It", 120, 26, function() welcome:Hide() end)
   ok:SetPoint("BOTTOMRIGHT", -20, 18)
-  local settings = UI.Button(welcome, "Settings", 120, 26, function()
+  local settings = UI.Button(body, "Settings", 120, 26, function()
     welcome:Hide()
     GW.OpenSettings()
   end)

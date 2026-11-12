@@ -60,6 +60,7 @@ local POST_TIMEOUT = 10 -- seconds to wait for the auction house to confirm a po
 ---@field keepSame boolean gear with copies left: keep the same item selected afterwards
 ---@field at number GetTime() when sent (or confirmed)
 ---@field warning boolean? the auction house asked to confirm the price (AUCTION_HOUSE_POST_WARNING)
+---@field warnedAt number? GetTime() of that warning; Confirm works GW.CONFIRM_DELAY after it
 ---@field done boolean? the post went through and was handled
 
 --- After a post: what to select next once the bags show the change.
@@ -81,6 +82,7 @@ local panel -- the frame, created on first use
 ---@field stats table? market stats from the live search (GW.MarketStats)
 ---@field duration number duration index (1 = 2h, 2 = 8h, 3 = 24h)
 ---@field strategy string? "fast", "typical" or "patient"; nil for a price you typed
+---@field typed boolean? the player typed the price: later results never replace it
 ---@field prices SellPrices?
 ---@field showHidden boolean? show hidden items in the list
 ---@field hiddenCount number? number of hidden items in the bags
@@ -450,8 +452,14 @@ local function recalc()
   end
   panel.warn:SetText(warn)
   setColor(panel.warn, warnColor)
-  panel.post:SetText(state.pending and state.pending.warning and "Confirm: " .. postLabel(g, qty) or postLabel(g, qty))
-  panel.post:SetEnabled(unit > 0 and (not state.pending or state.pending.warning) and true or false)
+  -- Only data-pack prices so far (live listings still loading): wait, unless the player typed a price.
+  local loading = state.searching and not state.stats and not state.typed
+  local p = state.pending
+  local confirmWait = p and p.warning and GetTime() - (p.warnedAt or 0) < GW.CONFIRM_DELAY
+  panel.post:SetText(
+    loading and "Getting live prices…" or p and p.warning and "Confirm: " .. postLabel(g, qty) or postLabel(g, qty)
+  )
+  panel.post:SetEnabled(unit > 0 and not loading and not confirmWait and (not p or p.warning) and true or false)
 end
 
 --- Sets state.prices for the selected item from live listings (or the data pack while they load);
@@ -491,6 +499,7 @@ end
 ---@param reason string? text for the line under the buttons
 local function chooseStrategy(key, reason)
   state.strategy = key
+  state.typed = nil
   local p = state.prices and state.prices[key]
   if p then setUnitPrice(p) end
   panel.why:SetText(reason or "")
@@ -502,6 +511,10 @@ end
 --- more than 15% under the typical price (then Typical).
 local function applyDefaultStrategy()
   computePrices()
+  if state.typed then -- the player's own price stays; the strategy buttons still show the new prices
+    recalc()
+    return
+  end
   local P, s = state.prices, state.stats
   if not P then
     state.strategy = nil
@@ -827,6 +840,7 @@ local function selectItem(g)
   state.sel = g
   state.stats = nil
   state.strategy = nil
+  state.typed = nil
   panel.iconButton.tex:SetTexture(g.icon or 134400)
   panel.iconButton:Show()
   panel.itemName:SetText(g.name)
@@ -853,6 +867,28 @@ local function selectItem(g)
   GW.SellCharts.Render(g.itemID)
   renderBags()
   search(g)
+end
+
+--- Error names (from GetGameMessageInfo) that can answer a post: auction house errors and money.
+local POST_ERRORS = { ERR_NOT_ENOUGH_MONEY = true, ERR_ITEM_NOT_FOUND = true, ERR_ITEM_LOCKED = true }
+
+--- Whether a UI_ERROR_MESSAGE is the auction house refusing a post, not something unrelated
+--- ("Out of range.", a spell error) that happens to arrive while the post is on its way.
+---@param messageType any UI_ERROR_MESSAGE's first argument
+---@param message any its text
+---@return boolean
+function GW.IsAuctionError(messageType, message)
+  if type(message) ~= "string" then return false end
+  local name = GetGameMessageInfo and type(messageType) == "number" and GetGameMessageInfo(messageType)
+  if type(name) == "string" then return name:find("^ERR_AUCTION") ~= nil or POST_ERRORS[name] == true end
+  -- Without the error's name, compare the text with the game's own auction and money messages.
+  for key in pairs(POST_ERRORS) do
+    if _G[key] == message then return true end
+  end
+  local lower = message:lower()
+  return lower:find("auction", 1, true) ~= nil
+    or lower:find("money", 1, true) ~= nil
+    or lower:find("deposit", 1, true) ~= nil
 end
 
 ---------------------------------------------------------------------------
@@ -936,6 +972,7 @@ local function postSelected()
 
   -- The auction house asked us to confirm this post (AUCTION_HOUSE_POST_WARNING): this click confirms.
   if p and p.warning then
+    if GetTime() - (p.warnedAt or 0) < GW.CONFIRM_DELAY then return end -- a double click or held key
     p.warning = nil
     local loc = findLocation(p.itemID) or p.loc
     if p.commodity and C_AuctionHouse.ConfirmPostCommodity then
@@ -1283,8 +1320,9 @@ local function createPanel()
         -- The money boxes report changes a moment after we set them, so only a price that differs
         -- from the chosen strategy's is the player's own.
         local chosen = state.strategy and state.prices and state.prices[state.strategy]
-        if not state.settingPrice and getUnitPrice() ~= chosen then
+        if not state.settingPrice and getUnitPrice() ~= chosen and getUnitPrice() > 0 then
           state.strategy = nil
+          state.typed = true
           panel.why:SetText("Your own price.")
         end
         recalc()
@@ -1295,7 +1333,13 @@ local function createPanel()
     panel.copperBox:SetSize(120, 22)
     panel.copperBox:SetPoint("TOPLEFT", 6, -132)
     panel.copperBox:SetAutoFocus(false)
-    panel.copperBox:SetScript("OnTextChanged", recalc)
+    panel.copperBox:SetScript("OnTextChanged", function(_, userInput)
+      if userInput then
+        state.strategy = nil
+        state.typed = true
+      end
+      recalc()
+    end)
   end
 
   local ql = fs(col3, "GameFontNormalSmall", "LEFT")
@@ -1522,12 +1566,14 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
   elseif event == "AUCTION_HOUSE_POST_WARNING" then
     if state.pending then
       state.pending.warning = true
+      state.pending.warnedAt = GetTime()
       toast("The auction house asks you to confirm this price. Click Post again to confirm.", GW.SIGNAL_ORANGE)
       recalc()
+      C_Timer.After(GW.CONFIRM_DELAY + 0.05, recalc)
     end
   elseif event == "UI_ERROR_MESSAGE" then
     local p = state.pending
-    if p and not p.warning and GetTime() - p.at < POST_TIMEOUT and type(arg2) == "string" then
+    if p and not p.warning and GetTime() - p.at < POST_TIMEOUT and GW.IsAuctionError(arg1, arg2) then
       toast(arg2, GW.SIGNAL_ORANGE)
       GW.Log("post error: %s", arg2)
       finishPending()

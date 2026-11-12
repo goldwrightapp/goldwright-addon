@@ -24,7 +24,7 @@ body:
     attributes:
       label: Goldwright version
       description: Shown in your add-on manager (CurseForge app, WowUp) and in the in-game AddOns list.
-      placeholder: '0.1.0-alpha'
+      placeholder: '0.2.1'
     validations:
       required: true
 

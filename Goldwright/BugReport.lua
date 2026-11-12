@@ -25,7 +25,7 @@ local function addons(name, ...)
 end
 
 --- Goldwright's version from its .toc.
----@return string version e.g. "0.2.0-alpha"
+---@return string version e.g. "0.2.1"
 function GW.Version() return addons("GetAddOnMetadata", "Goldwright", "Version") or "?" end
 
 --- Loaded add-ons other than Goldwright and Blizzard's own, by folder name.

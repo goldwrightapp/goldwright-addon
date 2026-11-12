@@ -78,6 +78,11 @@ end
 -- data
 ---------------------------------------------------------------------------
 
+--- `s` when it is a non-empty string, else nil.
+---@param s any
+---@return string|nil
+local function nonEmpty(s) return type(s) == "string" and s ~= "" and s or nil end
+
 --- Reads the owned auctions the client has (after QueryOwnedAuctions) into cv.list (CXL-1).
 local function readOwned()
   local list = {}
@@ -98,9 +103,11 @@ local function readOwned()
         itemKey = key,
         keyStr = keyString(key),
         itemID = key.itemID,
-        name = (a.itemLink and a.itemLink:match("%[(.-)%]")) or (info and info.itemName) or ("item " .. tostring(
-          key.itemID
-        )),
+        -- An item the client hasn't loaded yet has an empty name ("[]" in its link): fall through
+        -- to the next source, and to "item <id>" last; ITEM_KEY_ITEM_INFO_RECEIVED re-reads it.
+        name = nonEmpty(a.itemLink and a.itemLink:match("%[(.-)%]")) or nonEmpty(info and info.itemName) or nonEmpty(
+          C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(key.itemID)
+        ) or ("item " .. tostring(key.itemID)),
         icon = (info and info.iconFileID)
           or (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(key.itemID))
           or 134400,
@@ -181,9 +188,17 @@ local STATUS_TEXT = {
 local function render()
   if not (view and view:IsShown()) then return end
   local counts = computeStatuses()
+  local moved = false
   for i, row in ipairs(view.rows) do
     local r = cv.list[i + cv.offset]
     row.r = r
+    -- A row that now shows a different auction (after a cancel or a refresh moved the list) takes
+    -- no clicks for a moment, so a second click on the same spot can't cancel the wrong auction.
+    local id = r and r.id
+    if id ~= row.shownId then
+      row.shownId, row.since = id, GetTime()
+      moved = moved or id ~= nil
+    end
     if r then
       row:Show()
       row.icon:SetTexture(r.icon)
@@ -210,12 +225,13 @@ local function render()
         row.cancel:SetText(
           r.cancelling and "Cancelling…" or ("Cancel" .. (cost and cost > 0 and (" · " .. GW.Money(cost)) or ""))
         )
-        row.cancel:SetEnabled(not r.cancelling)
+        row.cancel:SetEnabled(not r.cancelling and GetTime() - row.since >= GW.CONFIRM_DELAY)
       end
     else
       row:Hide()
     end
   end
+  if moved then C_Timer.After(GW.CONFIRM_DELAY + 0.05, render) end
 
   local progress
   if cv.waiting then
@@ -479,7 +495,10 @@ local function build(parent)
     row.cancel = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
     row.cancel:SetSize(130, 22)
     row.cancel:SetPoint("LEFT", 826, 0)
-    row.cancel:SetScript("OnClick", function() cancelRow(row.r) end)
+    row.cancel:SetScript("OnClick", function()
+      if GetTime() - (row.since or 0) < GW.CONFIRM_DELAY then return end -- the row just changed
+      cancelRow(row.r)
+    end)
     row:SetScript("OnEnter", function(self)
       if not (self.r and self.r.link) then return end
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -557,7 +576,7 @@ function GW.CancelView.OnEvent(event, arg1, arg2)
     if k and type(arg1) == "table" and arg1.itemID == k.itemKey.itemID then readFor(k, false, event) end
   elseif event == "UI_ERROR_MESSAGE" then
     local r = cv.lastCancel
-    if r and r.cancelling and GetTime() - (r.cancelAt or 0) < CANCEL_TIMEOUT and type(arg2) == "string" then
+    if r and r.cancelling and GetTime() - (r.cancelAt or 0) < CANCEL_TIMEOUT and GW.IsAuctionError(arg1, arg2) then
       r.cancelling = nil
       toast(arg2, GW.SIGNAL_ORANGE)
       render()

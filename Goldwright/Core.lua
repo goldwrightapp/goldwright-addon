@@ -43,6 +43,9 @@ GW.SIGNAL_ORANGE = { 0.96, 0.62, 0.29 } -- caution
 GW.GOLD = { 0.88, 0.67, 0.23 } -- brand mark
 GW.CUT = { A = 0.05, H = 0.05, N = 0.15 } -- auction house cut, assumed; AuctionMail.lua replaces it with the rate measured from sale invoices
 GW.HOUSE_NAMES = { A = "Alliance", H = "Horde", N = "Blackwater" }
+-- Seconds a confirm step (a quoted buy, the auction house's price warning) waits before the same
+-- button accepts it, so a double click or a held key can't go straight through it.
+GW.CONFIRM_DELAY = 0.8
 
 -- Ruleset by the last word of the realm name.
 local RULESET_BY_SUFFIX =

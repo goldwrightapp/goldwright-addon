@@ -8,6 +8,9 @@ local ROWS, ROW_H = 10, 30 -- entry table: visible rows, row height
 local LIST_ROWS = 11 -- visible rows in the lists column
 local SEARCH_TIMEOUT = 6 -- seconds to wait for search results before giving up on an entry
 local BUY_TIMEOUT = 12 -- seconds to wait for the exact commodity price before cancelling
+local QUOTE_TIMEOUT = 60 -- seconds a quoted price waits for Confirm before it is let go
+local CONFIRM_TIMEOUT = 30 -- seconds after Confirm before saying the outcome is unknown
+local LATE_RESULT_WINDOW = 300 -- seconds a late purchase result still counts for that buy
 local UI = GW.UI
 local fs, setColor = UI.FontString, UI.SetColor
 local GREY, WHITE = UI.GREY, UI.WHITE
@@ -137,46 +140,114 @@ function GW.ExportLists(lists)
   return table.concat(lines, "\n")
 end
 
+--- Limits on imported text, so a huge or crafted paste can't freeze the game or bloat saved data.
+GW.IMPORT_LIMITS = { chars = 100000, lists = 50, entries = 500, field = 100 }
+
+--- A whole number from `v` within [1, max], else nil.
+---@param v string
+---@param max number
+---@return number|nil
+local function wholeNumber(v, max)
+  if not v:match("^%d+$") or #v > 12 then return nil end
+  local n = tonumber(v)
+  return n and n >= 1 and n <= max and n or nil
+end
+
+--- An imported name made safe to show: no WoW formatting codes (links, textures, colours start
+--- with "|"), no backticks (they break code blocks where reports are pasted), no control
+--- characters, at most IMPORT_LIMITS.field characters.
+---@param s string
+---@return string
+local function safeText(s)
+  s = s:sub(1, GW.IMPORT_LIMITS.field):gsub("[|`%c]", "")
+  return strtrim(s)
+end
+
 --- Parses exported lists (see GW.ExportLists). Also takes Auctionator-style terms ("Name" in quotes;
 --- fields after ';' are ignored unless they are id=, max= or qty=). Lines without a name or without
---- any item are skipped.
+--- any item are skipped, as are numbers that aren't sensible (id and qty: whole and positive).
+--- Text over IMPORT_LIMITS.chars is refused; lists and entries past the limits are left out.
 ---@param text? string
----@return GoldwrightShoppingList[]
+---@return GoldwrightShoppingList[] lists
+---@return string|nil problem why something was refused or left out
 function GW.ImportLists(text)
-  local out = {}
-  for line in (text or ""):gmatch("[^\r\n]+") do
+  local L = GW.IMPORT_LIMITS
+  text = text or ""
+  if #text > L.chars then return {}, "That text is too long to be a shopping list." end
+  local out, cut = {}, false
+  for line in text:gmatch("[^\r\n]+") do
     local pieces = {}
-    for p in (line .. "^"):gmatch("(.-)%^") do
+    for p in (line .. "^"):gmatch("([^%^]*)%^") do
       pieces[#pieces + 1] = p
     end
-    local name = strtrim(pieces[1] or "")
+    local name = safeText(pieces[1] or "")
     if name ~= "" and #pieces > 1 then
+      if #out >= L.lists then
+        cut = true
+        break
+      end
       local list = { name = name, entries = {} }
       for i = 2, #pieces do
+        if #list.entries >= L.entries then
+          cut = true
+          break
+        end
         local fields = {}
-        for f in (pieces[i] .. ";"):gmatch("(.-);") do
+        for f in (pieces[i] .. ";"):gmatch("([^;]*);") do
           fields[#fields + 1] = f
         end
-        local item = strtrim(fields[1] or ""):gsub('^"(.*)"$', "%1")
+        local item = safeText((strtrim(fields[1] or ""):gsub('^"(.*)"$', "%1")))
         if item ~= "" then
           local e = { name = item }
           for j = 2, #fields do
-            local k, v = fields[j]:match("^%s*(%a+)=(.-)%s*$")
+            local f = fields[j]:sub(1, L.field)
+            local eq = f:find("=", 1, true)
+            local k = eq and strtrim(f:sub(1, eq - 1)):lower()
+            local v = eq and strtrim(f:sub(eq + 1)) or ""
             if k == "id" then
-              e.itemID = tonumber(v)
+              e.itemID = wholeNumber(v, 9999999)
             elseif k == "qty" then
-              e.want = tonumber(v)
+              e.want = wholeNumber(v, 99999)
             elseif k == "max" then
               e.max, e.maxPct = GW.ParseMoney(v)
+              if (e.max and e.max > 99999999999) or (e.maxPct and (e.maxPct < 1 or e.maxPct > 1000)) then
+                e.max, e.maxPct = nil, nil
+              end
             end
           end
+          -- The client's own name for the id wins, so a shared list can't show one item and buy another.
+          e.name = GW.ShopItemName(e.itemID) or e.name
           list.entries[#list.entries + 1] = e
         end
       end
-      out[#out + 1] = list
+      if #list.entries > 0 then out[#out + 1] = list end
     end
   end
-  return out
+  return out,
+    cut and string.format("Only the first %d lists and %d items per list were kept.", L.lists, L.entries) or nil
+end
+
+--- The game's name for an item id, when the client knows it (nil otherwise, e.g. not cached yet).
+---@param id? number
+---@return string|nil
+function GW.ShopItemName(id)
+  if not id then return nil end
+  local n = C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(id)
+  if not n then
+    local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+    n = getInfo and getInfo(id)
+  end
+  return n
+end
+
+--- An entry's name, corrected to the game's name for its id once the client knows it (a shared list
+--- may carry a misleading name). Saves the correction.
+---@param e GoldwrightShoppingEntry
+---@return string
+local function entryName(e)
+  local real = GW.ShopItemName(e.itemID)
+  if real and real ~= e.name then e.name = real end
+  return e.name
 end
 
 --- What buying looks like from an item's listings (the player's own excluded): the cheapest price,
@@ -261,6 +332,9 @@ local view
 ---@field total? number exact total from COMMODITY_PRICE_UPDATED (set: Confirm is possible)
 ---@field confirming? boolean Confirm was clicked
 ---@field done? boolean the purchase succeeded
+---@field quote? table identifies the latest price, so an older quote's timeout does nothing
+---@field quotedAt? number GetTime() of the latest price; Confirm works GW.CONFIRM_DELAY after it
+---@field unansweredAt? number GetTime() when we stopped waiting for the result after Confirm
 
 --- Shopping tab state (session only, not saved).
 ---@class GoldwrightShoppingState
@@ -275,6 +349,7 @@ local view
 ---@field running? boolean a list run is in progress
 ---@field waiting? boolean waiting for a free search slot (throttle)
 ---@field buy? GoldwrightShoppingBuy
+---@field unanswered? GoldwrightShoppingBuy a confirmed buy whose result never came; a late result still counts
 local sv = { results = {}, queue = {}, checked = 0, total = 0, bought = {} }
 local render
 
@@ -492,10 +567,43 @@ end
 ---@param color? number[] {r, g, b}
 local function toast(text, color) UI.Toast(view, text, color) end
 
---- Cancels a pending commodity purchase (if any) and forgets it.
+--- Cancels a pending commodity purchase (if any) and forgets it. A purchase whose Confirm was
+--- already clicked is on its way and is left alone: its result still arrives (onBuyEvent).
 local function cancelBuy()
+  if sv.buy and sv.buy.confirming then return end
   if sv.buy and C_AuctionHouse.CancelCommoditiesPurchase then pcall(C_AuctionHouse.CancelCommoditiesPurchase) end
   sv.buy = nil
+end
+
+--- Tells the player in the tab and in chat (the tab may be closed by now).
+---@param text string
+---@param color? number[]
+local function tellBuy(text, color)
+  toast(text, color)
+  if not (view and view:IsShown()) then GW.Print("%s", text) end
+end
+
+--- Gives up waiting for the result of a confirmed buy: the purchase may or may not have gone
+--- through, so the row stops offering it until the list is checked again, and a late result still
+--- counts (sv.unanswered).
+---@param b GoldwrightShoppingBuy
+---@param why string start of the message
+local function buyUnanswered(b, why)
+  if sv.buy == b then sv.buy = nil end
+  b.unansweredAt = GetTime()
+  sv.unanswered = b
+  sv.results[b.entry] = nil
+  GW.Log("shopping confirm unanswered: %d x %s (%s)", b.qty, b.entry.name, why)
+  tellBuy(
+    string.format(
+      "%s about %d × %s. It may have been bought: check your mailbox before buying again.",
+      why,
+      b.qty,
+      b.entry.name
+    ),
+    GW.SIGNAL_ORANGE
+  )
+  if render then render() end
 end
 
 --- The Buy / Confirm button of a commodity row. First click asks the auction house for the exact
@@ -506,26 +614,35 @@ local function buyClick(e)
   local res = sv.results[e]
   local b = sv.buy
   if InCombatLockdown and InCombatLockdown() then return toast("Not in combat.", GW.SIGNAL_ORANGE) end
+  if b and b.confirming then return end -- already buying: never confirm twice
   if b and b.entry == e and b.total then
+    if GetTime() - (b.quotedAt or 0) < GW.CONFIRM_DELAY then return end -- a double click on Buy
     -- second click: confirm at the quoted price
     b.confirming = true
     C_AuctionHouse.ConfirmCommoditiesPurchase(e.itemID, b.qty)
     GW.Log("shopping confirm: %d x %s for %d", b.qty, e.name, b.total)
     toast("Buying…", GREY)
     if render then render() end
+    C_Timer.After(CONFIRM_TIMEOUT, function()
+      if sv.buy == b and not b.done then buyUnanswered(b, "No answer from the auction house") end
+    end)
     return
   end
   if not (res and res.kind == "commodity" and res.plan.units > 0) then return end
+  entryName(e)
   cancelBuy()
   local qty = res.plan.units
   sv.buy = { entry = e, qty = qty, estimate = res.plan.total, at = GetTime() }
+  sv.unanswered = nil
   local token = sv.buy
   C_AuctionHouse.StartCommoditiesPurchase(e.itemID, qty)
   GW.Log("shopping buy start: %d x %s (estimate %d)", qty, e.name, res.plan.total)
   toast("Asking the auction house for the exact price…", GREY)
   if render then render() end
+  -- Only a buy that never got a price is cancelled here; a quoted one has its own wait
+  -- (onBuyEvent) and a confirmed one is never cancelled.
   C_Timer.After(BUY_TIMEOUT, function()
-    if sv.buy == token and not token.done then
+    if sv.buy == token and not token.done and not token.total and not token.confirming then
       cancelBuy()
       toast("No answer from the auction house. Nothing was bought.", GW.SIGNAL_ORANGE)
       if render then render() end
@@ -550,10 +667,41 @@ end
 ---@param a2 any total price (COMMODITY_PRICE_UPDATED)
 local function onBuyEvent(event, a1, a2)
   local b = sv.buy
+  local late = false
+  -- Blizzard's own Buy tab fires the same events, so only a result soon after counts as ours.
+  if sv.unanswered and GetTime() - (sv.unanswered.unansweredAt or 0) > LATE_RESULT_WINDOW then sv.unanswered = nil end
+  if not b and event:find("^COMMODITY_PURCHASE") and sv.unanswered then
+    b, late = sv.unanswered, true -- the result of a buy we stopped waiting for
+  end
   if not b then return end
   local e = b.entry
+  if late then
+    sv.unanswered = nil
+    if event == "COMMODITY_PURCHASE_SUCCEEDED" then
+      sv.bought[e] = (sv.bought[e] or 0) + b.qty
+      tellBuy(string.format("It went through after all: bought %d × %s.", b.qty, e.name), GW.SIGNAL_BLUE)
+    else
+      tellBuy(string.format("The purchase of %d × %s failed. Nothing was bought.", b.qty, e.name), GW.SIGNAL_ORANGE)
+    end
+    if render then render() end
+    return
+  end
   if event == "COMMODITY_PRICE_UPDATED" then
     b.unit, b.total = a1, a2
+    b.quotedAt = GetTime()
+    entryName(e)
+    C_Timer.After(GW.CONFIRM_DELAY + 0.05, function()
+      if render then render() end
+    end)
+    local quote = {}
+    b.quote = quote
+    C_Timer.After(QUOTE_TIMEOUT, function()
+      if sv.buy == b and b.quote == quote and not b.confirming and not b.done then
+        cancelBuy()
+        toast("The price wasn't confirmed in time. Nothing was bought: click Buy again.", GREY)
+        if render then render() end
+      end
+    end)
     local max = GW.EntryMax(e)
     if max and b.unit and b.unit > max then
       toast(
@@ -566,6 +714,18 @@ local function onBuyEvent(event, a1, a2)
       )
     elseif b.total and GetMoney and b.total > GetMoney() then
       toast("Not enough gold for " .. GW.Money(b.total) .. ".", GW.SIGNAL_ORANGE)
+    elseif b.total and b.total > b.estimate then
+      toast(
+        string.format(
+          "%d × %s for %s (%s each): %s more than the list showed. Confirm only if you still want it.",
+          b.qty,
+          e.name,
+          GW.Money(b.total),
+          GW.Money(b.unit),
+          GW.Money(b.total - b.estimate)
+        ),
+        GW.SIGNAL_ORANGE
+      )
     else
       toast(
         string.format(
@@ -584,13 +744,16 @@ local function onBuyEvent(event, a1, a2)
   elseif event == "COMMODITY_PURCHASE_SUCCEEDED" then
     b.done = true
     sv.bought[e] = (sv.bought[e] or 0) + b.qty
-    toast(string.format("Bought %d × %s for %s.", b.qty, e.name, GW.Money(b.total or b.estimate)), GW.SIGNAL_BLUE)
+    tellBuy(string.format("Bought %d × %s for %s.", b.qty, e.name, GW.Money(b.total or b.estimate)), GW.SIGNAL_BLUE)
     sv.buy = nil
     sv.results[e] = nil
-    C_Timer.After(0.5, function() GW.CheckEntry(e) end) -- see what's left
+    -- see what's left (only while the tab is open; otherwise the next run checks it)
+    C_Timer.After(0.5, function()
+      if view and view:IsShown() then GW.CheckEntry(e) end
+    end)
   elseif event == "COMMODITY_PURCHASE_FAILED" then
     sv.buy = nil
-    toast("The purchase failed. Nothing was bought.", GW.SIGNAL_ORANGE)
+    tellBuy("The purchase failed. Nothing was bought.", GW.SIGNAL_ORANGE)
   end
   if render then render() end
 end
@@ -690,7 +853,7 @@ render = function()
     row.e = e
     if e then
       row:Show()
-      row.name:SetText(e.name .. (e.itemID and "" or "  |cff9a9aa2(not found yet)|r"))
+      row.name:SetText(entryName(e) .. (e.itemID and "" or "  |cff9a9aa2(not found yet)|r"))
       local max = GW.EntryMax(e)
       row.max:SetText(
         e.maxPct and (e.maxPct .. "%" .. (max and (" · " .. GW.Money(max)) or ""))
@@ -708,7 +871,7 @@ render = function()
         row.action:SetText(
           b.confirming and "Buying…" or b.total and ("Confirm · " .. GW.Money(b.total)) or "Getting price…"
         )
-        row.action:SetEnabled(b.total ~= nil and not b.confirming)
+        row.action:SetEnabled(b.total ~= nil and not b.confirming and GetTime() - (b.quotedAt or 0) >= GW.CONFIRM_DELAY)
       elseif r and r.kind == "commodity" and r.plan.units > 0 and e.want then
         row.action:Show()
         row.action:SetText(string.format("Buy %d · %s", r.plan.units, GW.Money(r.plan.total)))
@@ -844,7 +1007,7 @@ local function showIO(mode)
     io.ok:SetPoint("BOTTOMRIGHT", -16, 16)
     io.ok:SetScript("OnClick", function()
       if io.mode == "import" then
-        local got = GW.ImportLists(io.box:GetText())
+        local got, problem = GW.ImportLists(io.box:GetText())
         local lists = GW.Lists()
         local items = 0
         for _, l in ipairs(got) do
@@ -852,11 +1015,17 @@ local function showIO(mode)
           items = items + #l.entries
         end
         if #got > 0 then GoldwrightDB.listSel = #lists end
-        toast(
-          #got > 0 and string.format("Imported %d list%s with %d items.", #got, #got == 1 and "" or "s", items)
-            or "Nothing to import: one list per line, Name^Item^Item.",
-          #got > 0 and GW.SIGNAL_BLUE or GW.SIGNAL_ORANGE
-        )
+        local msg = #got > 0
+            and string.format(
+              "Imported %d list%s with %d item%s.",
+              #got,
+              #got == 1 and "" or "s",
+              items,
+              items == 1 and "" or "s"
+            )
+          or "Nothing to import: one list per line, Name^Item^Item."
+        if problem then msg = (#got > 0 and msg .. " " or "") .. problem end
+        toast(msg, (#got > 0 and not problem) and GW.SIGNAL_BLUE or GW.SIGNAL_ORANGE)
       end
       io:Hide()
       if render then render() end
@@ -869,9 +1038,11 @@ local function showIO(mode)
       "Paste lists here, one per line: List name^Item^Item;max=75c;qty=20. Auctionator lists work too (names only)."
     )
     io.box:SetText("")
+    if io.box.SetMaxLetters then io.box:SetMaxLetters(GW.IMPORT_LIMITS.chars + 1) end -- +1: "too long" is reported
     io.ok:SetText("Import")
   else
     io.hint:SetText("Copy this text (Ctrl+A, then Ctrl+C). It holds all your lists.")
+    if io.box.SetMaxLetters then io.box:SetMaxLetters(0) end -- no limit on your own lists
     io.box:SetText(GW.ExportLists(GW.Lists()))
     io.ok:SetText("Close")
     io.box:HighlightText()
@@ -1216,11 +1387,16 @@ for _, e in ipairs({
 end
 events:SetScript("OnEvent", function(_, event, a1, a2)
   if event == "AUCTION_HOUSE_CLOSED" then
+    local b = sv.buy
+    if b and b.confirming and not b.done then buyUnanswered(b, "The auction house closed before it answered") end
     sv.buy = nil
     GW.StopList()
     return
   end
-  if not (view and view:IsShown()) then return end
+  -- A confirmed buy's result counts even with the tab closed (it was the player's click).
+  local buyResult = event:find("^COMMODITY_PURCHASE")
+    and ((sv.buy and sv.buy.confirming) or (not sv.buy and sv.unanswered))
+  if not buyResult and not (view and view:IsShown()) then return end
   if event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" then
     onBrowseResults()
   elseif event:find("^COMMODITY_P") then
