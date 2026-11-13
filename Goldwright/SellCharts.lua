@@ -3,14 +3,28 @@
 --- Drawn once per selected item (or toggle / settings change) from pooled objects: no OnUpdate, no
 --- work while idle. The numbers come from Selling.lua (GW.HistoryWindow, ...), tested without the UI.
 local _, GW = ...
+local L = GW.L
 
 local CW, PH = 182, 80 -- chart width, plot height
 local GAP = 16 -- between the two charts
 local TOP = -286 -- header row in col2
 local PLOT_Y = TOP - 18 -- plot top
 local LABEL_PAD = 13 -- room for the small labels inside the plot
-local HISTORY_SINCE = "since Nov 9" -- the pipeline's first day of history
-local MONTHS = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" }
+-- "Nov 9" by month, so each language can put the day first ("9. Nov.").
+local MONTH_DAY = {
+  L["Jan %d"],
+  L["Feb %d"],
+  L["Mar %d"],
+  L["Apr %d"],
+  L["May %d"],
+  L["Jun %d"],
+  L["Jul %d"],
+  L["Aug %d"],
+  L["Sep %d"],
+  L["Oct %d"],
+  L["Nov %d"],
+  L["Dec %d"],
+}
 local UI = GW.UI
 local GREY = UI.GREY
 
@@ -70,7 +84,7 @@ local function side() return GW.AuctionSide and GW.AuctionSide() or GW.House().s
 ---@return string
 local function dayLabel(epoch)
   local t = date("!*t", epoch)
-  return MONTHS[t.month] .. " " .. t.day
+  return string.format(MONTH_DAY[t.month], t.day)
 end
 
 ---------------------------------------------------------------------------
@@ -249,15 +263,15 @@ local function drawHistory(itemID)
   local pack = GW.Pack()
   local w = values and GW.HistoryWindow(values, from, pack and pack.snapshotAt, c.days)
   if not pack then
-    showChart(c, false, "Price history comes with the Goldwright Data pack.")
+    showChart(c, false, L["Price history comes with the Goldwright Data pack."])
   elseif not w or w.total < GW.HISTORY_MIN_DAYS then
     local have = w and w.total or 0
+    -- "since Nov 9": the pipeline's first day of history.
     showChart(
       c,
       false,
-      have > 0
-          and string.format("Building history (%s): %d of %d days so far.", HISTORY_SINCE, have, GW.HISTORY_MIN_DAYS)
-        or string.format("Building history (%s).", HISTORY_SINCE)
+      have > 0 and string.format(L["Building history (since Nov 9): %d of %d days so far."], have, GW.HISTORY_MIN_DAYS)
+        or L["Building history (since Nov 9)."]
     )
   else
     showChart(c, true)
@@ -286,7 +300,7 @@ local function drawHistory(itemID)
     c.lo:SetText(GW.Money(lo))
     c.xFirst:SetText(dayLabel(w.firstDay))
     c.xLast:SetText(dayLabel(w.firstDay + (n - 1) * 86400))
-    c.below:SetText(string.format("%s—|r 30-day average %s", hex(GW.SIGNAL_ORANGE), GW.Money(avg)))
+    c.below:SetText(string.format(L["%s—|r 30-day average %s"], hex(GW.SIGNAL_ORANGE), GW.Money(avg)))
   end
   for _, b in ipairs(c.toggles) do
     if b.days == c.days then
@@ -319,9 +333,9 @@ local function drawHours(itemID)
     if units and units[h] and units[h] > maxU then maxU = units[h] end
   end
   if not GW.Pack() then
-    showChart(c, false, "The hourly pattern comes with the Goldwright Data pack.")
+    showChart(c, false, L["The hourly pattern comes with the Goldwright Data pack."])
   elseif not profile or maxU == 0 then
-    showChart(c, false, "Appears once there are enough hourly snapshots of this item (about two weeks).")
+    showChart(c, false, L["Appears once there are enough hourly snapshots of this item (about two weeks)."])
   else
     showChart(c, true)
     local win = GW.BestPostWindow(profile, offset)
@@ -346,7 +360,7 @@ local function drawHours(itemID)
     else
       c.price:SetText("")
     end
-    c.units:SetText(string.format("up to %s listed", GW.Number(math.floor(maxU + 0.5))))
+    c.units:SetText(string.format(L["up to %s listed"], GW.Number(math.floor(maxU + 0.5))))
     c.below:SetText(GW.BestPostText(win) or "")
     if win and not win.flat then
       UI.SetColor(c.below, GW.SIGNAL_BLUE)
@@ -366,7 +380,7 @@ end
 --- 30d toggles) and best time to post (with hour labels in the player's time).
 ---@param col2 table the middle column frame
 function Charts.Create(col2)
-  hist = newChart(col2, 0, "Price history")
+  hist = newChart(col2, 0, L["Price history"])
   hist.days = 7
   hist.hi = fs(hist.plot, "GameFontDisableSmall", "LEFT")
   hist.hi:SetPoint("TOPLEFT", 2, -1)
@@ -383,7 +397,7 @@ function Charts.Create(col2)
     b:SetSize(32, 16)
     b:SetPoint("TOPLEFT", CW - 66 + (i - 1) * 34, TOP + 2)
     b:SetNormalFontObject("GameFontHighlightSmall")
-    b:SetText(days .. "d")
+    b:SetText(string.format(L["%dd"], days))
     b.days = days
     b:SetScript("OnClick", function()
       hist.days = days
@@ -394,10 +408,10 @@ function Charts.Create(col2)
   end
 
   local x2 = CW + GAP
-  hrs = newChart(col2, x2, "Best time to post")
+  hrs = newChart(col2, x2, L["Best time to post"])
   local tz = fs(col2, "GameFontDisableSmall", "RIGHT")
   tz:SetPoint("TOPRIGHT", col2, "TOPLEFT", x2 + CW, TOP - 1)
-  tz:SetText("your time")
+  tz:SetText(L["your time"])
   hrs.units = fs(hrs.plot, "GameFontDisableSmall", "LEFT")
   hrs.units:SetPoint("TOPLEFT", 2, -1)
   hrs.price = fs(hrs.plot, "GameFontDisableSmall", "RIGHT")

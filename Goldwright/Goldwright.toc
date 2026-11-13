@@ -1,8 +1,18 @@
 ## Interface: 16001
 ## Title: Goldwright
 ## Notes: Auction house prices for WoW Forever.
+## Notes-deDE: Auktionshauspreise für WoW Forever.
+## Notes-frFR: Prix de l'hôtel des ventes pour WoW Forever.
+## Notes-esES: Precios de la casa de subastas para WoW Forever.
+## Notes-esMX: Precios de la casa de subastas para WoW Forever.
+## Notes-itIT: Prezzi della Casa d'Aste per WoW Forever.
+## Notes-ptBR: Preços da Casa de Leilões para WoW Forever.
+## Notes-ruRU: Цены аукциона для WoW Forever.
+## Notes-koKR: WoW Forever용 경매장 시세.
+## Notes-zhCN: WoW Forever 拍卖行价格。
+## Notes-zhTW: WoW Forever 拍賣場價格。
 ## Author: Goldwright
-## Version: 0.2.2
+## Version: 0.3.0
 ## SavedVariables: GoldwrightDB, GoldwrightScans
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
 ## AddonCompartmentFunc: Goldwright_OnAddonCompartmentClick
@@ -11,7 +21,19 @@
 ## X-Curse-Project-ID: 1796909
 ## X-Wago-ID: 4N2bpZNL
 
+Localization.lua
+Locale_deDE.lua
+Locale_frFR.lua
+Locale_esES.lua
+Locale_esMX.lua
+Locale_itIT.lua
+Locale_ptBR.lua
+Locale_ruRU.lua
+Locale_koKR.lua
+Locale_zhCN.lua
+Locale_zhTW.lua
 Core.lua
+Diagnostics.lua
 UI.lua
 Pricing.lua
 Selling.lua

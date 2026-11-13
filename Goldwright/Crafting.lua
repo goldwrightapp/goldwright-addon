@@ -6,11 +6,12 @@
 --- The C_TradeSkillUI field names come from warcraft.wiki.gg (Forever 1.60.1) and are not all
 --- confirmed in game yet, so every read is defensive: a missing field means "unknown", never an error.
 local _, GW = ...
+local L = GW.L
 
 GW.MERCHANTS_FAVOR = 3402 -- currency id of Merchant's Favor (Forever's vendor-recipe currency)
 
 -- Names for currencies the client can't name (no C_CurrencyInfo, or not cached yet).
-local CURRENCY_NAMES = { [3402] = "Merchant's Favor" }
+local CURRENCY_NAMES = { [3402] = L["Merchant's Favor"] }
 
 --- A material slot of a recipe, as GW.ReadRecipe returns it.
 ---@class GoldwrightReagent
@@ -98,7 +99,7 @@ function GW.CurrencyName(currencyID)
   local info = api and safe(api.GetCurrencyInfo, currencyID)
   local name = type(info) == "table" and info.name
   if type(name) == "string" and name ~= "" then return name end
-  return CURRENCY_NAMES[currencyID] or ("Currency " .. tostring(currencyID))
+  return CURRENCY_NAMES[currencyID] or string.format(L["Currency %s"], tostring(currencyID))
 end
 
 --- Recipe spell ids of the open profession, learned and not (empty until the window has opened).
@@ -137,7 +138,8 @@ function GW.ReadRecipe(recipeID)
   info = type(info) == "table" and info or {}
   local r = {
     id = recipeID,
-    name = (type(info.name) == "string" and info.name ~= "") and info.name or ("Recipe " .. tostring(recipeID)),
+    name = (type(info.name) == "string" and info.name ~= "") and info.name
+      or string.format(L["Recipe %s"], tostring(recipeID)),
     learned = info.learned == true,
     icon = num(info.icon) or (type(info.icon) == "string" and info.icon) or nil,
     reagents = {},

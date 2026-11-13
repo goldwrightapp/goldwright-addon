@@ -2,6 +2,7 @@
 --- optional minimap button. Click: a small popup with the house, data pack age and quick links.
 --- Right-click: settings. No always-visible frames besides the button.
 local _, GW = ...
+local L = GW.L
 
 local UI = GW.UI
 local fs, setColor = UI.FontString, UI.SetColor
@@ -34,15 +35,22 @@ local function refreshPopup()
   if pack then
     local days = GW.PackAgeDays()
     popup.pack:SetText(
-      (days and days > GW.STALE_DAYS and "|cfff59e4b" or "") .. "snapshot " .. GW.Age(pack.snapshotAt) .. "|r"
+      (days and days > GW.STALE_DAYS and "|cfff59e4b" or "")
+        .. string.format(L["snapshot %s"], GW.Age(pack.snapshotAt))
+        .. "|r"
     )
   else
-    popup.pack:SetText("|cfff59e4bnot installed|r")
+    popup.pack:SetText("|cfff59e4b" .. L["not installed"] .. "|r")
   end
-  popup.searches:SetText(string.format("%d / %d this minute", GW.SearchesThisMinute(), GW.SEARCH_LIMIT))
+  popup.searches:SetText(string.format(L["%d / %d this minute"], GW.SearchesThisMinute(), GW.SEARCH_LIMIT))
   local left = GW.ScanCooldownLeft and GW.ScanCooldownLeft() or 0
   local last = GW.LastScanText and GW.LastScanText()
-  popup.scan:SetText((last or "none yet") .. (left > 0 and (" · next in " .. GW.ClockText(left)) or " · available"))
+  last = last or L["none yet"]
+  if left > 0 then
+    popup.scan:SetText(string.format(L["%s · next in %s"], last, GW.ClockText(left)))
+  else
+    popup.scan:SetText(string.format(L["%s · available"], last))
+  end
   popup.open:SetEnabled(GW.AuctionHouseOpen and GW.AuctionHouseOpen() and true or false)
 end
 
@@ -74,10 +82,10 @@ local function createPopup()
   close:SetSize(24, 24)
   close:SetPoint("TOPRIGHT", -2, -2)
 
-  popup.house = pairRow(-36, "House")
-  popup.pack = pairRow(-54, "Data pack")
-  popup.searches = pairRow(-72, "Searches")
-  local scan = pairRow(-90, "Full scan")
+  popup.house = pairRow(-36, L["House"])
+  popup.pack = pairRow(-54, L["Data pack"])
+  popup.searches = pairRow(-72, L["Searches"])
+  local scan = pairRow(-90, L["Full scan"])
   popup.scan = scan
 
   --- A full-width button in the popup at top offset y.
@@ -90,7 +98,7 @@ local function createPopup()
     b:SetPoint("TOPLEFT", 14, y)
     return b
   end
-  popup.open = linkButton("Open Goldwright", -112, function()
+  popup.open = linkButton(L["Open Goldwright"], -112, function()
     popup:Hide()
     GW.OpenTab("sell")
   end)
@@ -98,11 +106,11 @@ local function createPopup()
   popup.open:SetScript("OnEnter", function(self)
     if self:IsEnabled() then return end
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetText("Open the auction house first")
+    GameTooltip:SetText(L["Open the auction house first"])
     GameTooltip:Show()
   end)
   popup.open:SetScript("OnLeave", function() GameTooltip:Hide() end)
-  linkButton("Settings", -138, function()
+  linkButton(L["Settings"], -138, function()
     popup:Hide()
     GW.OpenSettings()
   end)
@@ -120,7 +128,7 @@ local function createPopup()
   web:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
   local hint = fs(popup, "GameFontDisableSmall", "LEFT")
   hint:SetPoint("TOPLEFT", web, "BOTTOMLEFT", -6, -2)
-  hint:SetText("Click, then Ctrl+C to copy")
+  hint:SetText(L["Click, then Ctrl+C to copy"])
   popup:SetHeight(214)
   popup:Hide()
 end
@@ -159,8 +167,8 @@ end
 local function showButtonTooltip(owner)
   GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
   GameTooltip:SetText("Goldwright", GW.GOLD[1], GW.GOLD[2], GW.GOLD[3])
-  GameTooltip:AddLine("Auction house prices for WoW Forever", 1, 1, 1)
-  GameTooltip:AddLine("Click: status and links · Right-click: settings", GREY[1], GREY[2], GREY[3])
+  GameTooltip:AddLine(L["Auction house prices for WoW Forever"], 1, 1, 1)
+  GameTooltip:AddLine(L["Click: status and links · Right-click: settings"], GREY[1], GREY[2], GREY[3])
   GameTooltip:Show()
 end
 
@@ -256,7 +264,7 @@ function GW.SetMinimapShown(show)
   GW.SetOpt("minimap", show and true or false)
   if show and not minimapButton and Minimap then createMinimapButton() end
   if minimapButton then minimapButton:SetShown(show and true or false) end
-  if not show and not hasCompartment() then GW.Print("Minimap button hidden. Bring it back with /gw minimap.") end
+  if not show and not hasCompartment() then GW.Print(L["Minimap button hidden. Bring it back with /gw minimap."]) end
 end
 
 GW.OnLogin(function()

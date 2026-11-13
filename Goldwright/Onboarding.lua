@@ -3,6 +3,7 @@
 --- (missing, wrong-region or stale pack) are one chat line at login (Core.lua) and the Sell panel's
 --- status banner.
 local _, GW = ...
+local L = GW.L
 
 local WELCOME_VERSION = 1 -- raise to show the welcome again to everyone who saw an older one
 local UI = GW.UI
@@ -22,23 +23,23 @@ function GW.PackStatusText()
     local days = GW.PackAgeDays()
     if days and days > GW.STALE_DAYS then
       return string.format(
-        "Goldwright Data: %s · installed, but %d days old: update it in your add-on manager",
+        L["Goldwright Data: %s · installed, but %s old: update it in your add-on manager"],
         h.region,
-        math.floor(days)
+        GW.Plural(math.floor(days), "%d day", "%d days")
       ),
         false
     end
-    return string.format("Goldwright Data: %s · installed, snapshot %s", h.region, GW.Age(pack.snapshotAt)), true
+    return string.format(L["Goldwright Data: %s · installed, snapshot %s"], h.region, GW.Age(pack.snapshotAt)), true
   end
   if GW.packStatus == "disabled" then
-    return string.format("Installed but disabled: enable GoldwrightData_%s in the AddOns list", h.packKey), false
+    return string.format(L["Installed but disabled: enable GoldwrightData_%s in the AddOns list"], h.packKey), false
   end
   if GW.packStatus == "schema" then
-    return "Your data pack doesn't match this version: update both in your add-on manager", false
+    return L["Your data pack doesn't match this version: update both in your add-on manager"], false
   end
   if GW.otherPacks and #GW.otherPacks > 0 then
     return string.format(
-      "You have %s, but you're playing on %s %s: install Goldwright Data: %s",
+      L["You have %s, but you're playing on %s %s: install Goldwright Data: %s"],
       table.concat(GW.otherPacks, ", "),
       h.region,
       h.ruleset,
@@ -46,7 +47,8 @@ function GW.PackStatusText()
     ),
       false
   end
-  return string.format('Not installed: search "Goldwright Data" in your add-on manager and install %s', h.region), false
+  return string.format(L['Not installed: search "Goldwright Data" in your add-on manager and install %s'], h.region),
+    false
 end
 
 --- A label / value row in the welcome panel.
@@ -81,21 +83,21 @@ local function create()
 
   local t = fs(body, "GameFontNormalLarge", "LEFT")
   t:SetPoint("TOPLEFT", 24, -36)
-  t:SetText("Welcome to Goldwright")
+  t:SetText(L["Welcome to Goldwright"])
   setColor(t, GW.GOLD)
   local tag = fs(body, "GameFontHighlight", "LEFT")
   tag:SetPoint("TOPLEFT", 24, -58)
-  tag:SetText("Auction house prices for WoW Forever.")
+  tag:SetText(L["Auction house prices for WoW Forever."])
 
-  welcome.region = row(-90, "Region")
-  welcome.ruleset = row(-110, "Ruleset")
-  welcome.faction = row(-130, "Faction")
-  welcome.pack = row(-150, "Data pack")
+  welcome.region = row(-90, L["Region"])
+  welcome.ruleset = row(-110, L["Ruleset"])
+  welcome.faction = row(-130, L["Faction"])
+  welcome.pack = row(-150, L["Data pack"])
 
   local tips = {
-    "Hover any item: market value, the real cheapest price and other houses are in the tooltip.",
-    "At the auction house, Goldwright opens beside it: sell through your bags one click at a time, and cancel undercut auctions.",
-    "Run a full scan (Scan tab) now and then: your prices become current to the minute. Right-click the Goldwright button for settings.",
+    L["Hover any item: market value, the real cheapest price and other houses are in the tooltip."],
+    L["At the auction house, Goldwright opens beside it: sell through your bags one click at a time, and cancel undercut auctions."],
+    L["Run a full scan (Scan tab) now and then: your prices become current to the minute. Right-click the Goldwright button for settings."],
   }
   local y = -196
   for i, text in ipairs(tips) do
@@ -110,9 +112,9 @@ local function create()
     y = y - math.max(36, f:GetStringHeight() + 14)
   end
 
-  local ok = UI.Button(body, "Got It", 120, 26, function() welcome:Hide() end)
+  local ok = UI.Button(body, L["Got It"], 120, 26, function() welcome:Hide() end)
   ok:SetPoint("BOTTOMRIGHT", -20, 18)
-  local settings = UI.Button(body, "Settings", 120, 26, function()
+  local settings = UI.Button(body, L["Settings"], 120, 26, function()
     welcome:Hide()
     GW.OpenSettings()
   end)
@@ -124,20 +126,15 @@ end
 --- Shows the welcome panel with the detected house and the data pack status (not in combat).
 function GW.ShowWelcome()
   if InCombatLockdown and InCombatLockdown() then
-    GW.Print("The welcome opens after combat.")
+    GW.Print(L["The welcome opens after combat."])
     return
   end
   if not welcome then create() end
   local h = GW.House()
   welcome.region:SetText(h.region)
-  welcome.ruleset:SetText(
-    string.format(
-      "%s  |cff9a9aa2(from realm “%s”%s)|r",
-      h.ruleset,
-      h.realm,
-      GoldwrightDB.rulesetOverride and ", set by you" or ""
-    )
-  )
+  local fmt = GoldwrightDB.rulesetOverride and L["%s  |cff9a9aa2(from realm “%s”, set by you)|r"]
+    or L["%s  |cff9a9aa2(from realm “%s”)|r"]
+  welcome.ruleset:SetText(string.format(fmt, h.ruleset, h.realm))
   welcome.faction:SetText(GW.HOUSE_NAMES[h.side])
   local text, good = GW.PackStatusText()
   welcome.pack:SetText(text)

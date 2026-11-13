@@ -2,6 +2,7 @@
 --- auction house, the result is stored per house in GoldwrightScans as market stats per item (not the
 --- raw listings) and replaces the data pack's current prices for that house (Core.lua GW.ItemData).
 local _, GW = ...
+local L = GW.L
 
 -- ReplicateItems on Forever, verified 2026-11-09 with the GoldwrightDev tool:
 -- - the server answers in ~17-18 s with REPLICATE_ITEM_LIST_UPDATE, ~172,000 rows, 0-based;
@@ -14,7 +15,16 @@ local TIMEOUT = 90 -- no data after this many seconds means the server ignored t
 local KEEP_HISTORY = 3
 GW.SCAN_COOLDOWN = 15 * 60
 
--- Q2 (open): which auction houses are Blackwater. Until confirmed, these zones count as neutral.
+-- Q2 (open): which auction houses are Blackwater. Until confirmed, the neutral towns count, found by
+-- map ID so it works in every client language (zone names are translated). Classic map IDs: the dev
+-- tool recorded Stormwind as 1453 on Forever (2026-11-12). The towns have no map of their own, and
+-- their zones have no other auction house.
+local NEUTRAL_MAPS = {
+  [1434] = true, -- Stranglethorn Vale (Booty Bay)
+  [1446] = true, -- Tanaris (Gadgetzan)
+  [1452] = true, -- Winterspring (Everlook)
+}
+-- English names, for when the map can't be read.
 local NEUTRAL_ZONES = { ["Booty Bay"] = true, ["Gadgetzan"] = true, ["Everlook"] = true }
 
 local UI = GW.UI
@@ -59,6 +69,8 @@ end
 --- Which house the open auction house is: Blackwater in neutral towns, else your faction's.
 ---@return string side "A", "H" or "N"
 function GW.AuctionSide()
+  local map = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+  if map and NEUTRAL_MAPS[map] then return "N" end
   local sub = GetSubZoneText and GetSubZoneText() or ""
   local zone = GetZoneText and GetZoneText() or ""
   if NEUTRAL_ZONES[sub] or NEUTRAL_ZONES[zone] then return "N" end
@@ -292,14 +304,14 @@ end
 --- Requests a full scan (SCAN-1). Prints why when it can't start.
 ---@param anyway boolean request even though the cooldown hasn't passed (the server may ignore it)
 function GW.StartScan(anyway)
-  if run then return GW.Print("A full scan is already running.") end
-  if not (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) then return GW.Print("Open the auction house first.") end
+  if run then return GW.Print(L["A full scan is already running."]) end
+  if not (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) then return GW.Print(L["Open the auction house first."]) end
   if not (C_AuctionHouse and C_AuctionHouse.ReplicateItems) then
-    return GW.Print("This client has no full-scan API.")
+    return GW.Print(L["This client has no full-scan API."])
   end
   local left = GW.ScanCooldownLeft()
   if left > 0 and not anyway then
-    return GW.Print("The next full scan is available in %s (15 minutes after your last one).", GW.ClockText(left))
+    return GW.Print(L["The next full scan is available in %s (15 minutes after your last one)."], GW.ClockText(left))
   end
   ---@type ScanRun
   local r =
@@ -338,24 +350,25 @@ local function statusText()
   local h = GW.House()
   if run then
     if run.phase == "waiting" then
-      return "Waiting for the server…",
+      return L["Waiting for the server…"],
         string.format(
-          "%d s · usually about 18 s · keep the auction house open%s",
-          math.floor(GetTime() - run.started),
-          run.early and " · requested before the 15 minutes were up, so the server may ignore it" or ""
+          run.early
+              and L["%d s · usually about 18 s · keep the auction house open · requested before the 15 minutes were up, so the server may ignore it"]
+            or L["%d s · usually about 18 s · keep the auction house open"],
+          math.floor(GetTime() - run.started)
         ),
         0,
         GREY
     elseif run.phase == "reading" then
       local p = (run.index - run.first) / run.total
-      return string.format("Reading %s listings… %d%%", n(run.total), math.floor(p * 100)),
-        "Keep the auction house open",
+      return string.format(L["Reading %s listings… %d%%"], n(run.total), math.floor(p * 100)),
+        L["Keep the auction house open"],
         p * 0.8,
         GREY
     else
       local p = (run.ki - 1) / math.max(1, #run.keys)
-      return string.format("Working out prices for %s items… %d%%", n(#run.keys), math.floor(p * 100)),
-        "Keep the auction house open",
+      return string.format(L["Working out prices for %s items… %d%%"], n(#run.keys), math.floor(p * 100)),
+        L["Keep the auction house open"],
         0.8 + p * 0.2,
         GREY
     end
@@ -363,31 +376,35 @@ local function statusText()
   local last = GW.lastScan
   if last then
     if last.outcome == "saved" then
-      return string.format("Scanned %s listings at %s", n(last.total), date("%H:%M", last.dataAt)),
-        string.format("Your prices are now current for %s · %s · %s.", h.region, h.ruleset, GW.HOUSE_NAMES[last.side]),
+      return string.format(L["Scanned %s listings at %s"], n(last.total), date("%H:%M", last.dataAt)),
+        string.format(
+          L["Your prices are now current for %s · %s · %s."],
+          h.region,
+          h.ruleset,
+          GW.HOUSE_NAMES[last.side]
+        ),
         1,
         GW.SIGNAL_BLUE
     elseif last.outcome == "empty" or last.outcome == "timeout" then
       local next = GW.LastScanDataAt() > 0 and GW.LastScanDataAt() + GW.SCAN_COOLDOWN or nil
-      return "The server didn't send data",
-        "Full scans are limited to one every 15 minutes per account."
-          .. (
-            next and next > GetServerTime() and (" Try again at " .. date("%H:%M", next) .. ".")
-            or " Try again in a few minutes."
-          ),
+      return L["The server didn't send data"],
+        next and next > GetServerTime() and string.format(
+          L["Full scans are limited to one every 15 minutes per account. Try again at %s."],
+          date("%H:%M", next)
+        ) or L["Full scans are limited to one every 15 minutes per account. Try again in a few minutes."],
         0,
         GW.SIGNAL_ORANGE
     elseif last.outcome == "closed" then
-      return "The auction house closed before the scan finished",
-        "Nothing was saved. The 15 minutes count from when the server sent data.",
+      return L["The auction house closed before the scan finished"],
+        L["Nothing was saved. The 15 minutes count from when the server sent data."],
         0,
         GW.SIGNAL_ORANGE
     else
-      return "The scan failed", tostring(last.detail or ""), 0, GW.SIGNAL_ORANGE
+      return L["The scan failed"], tostring(last.detail or ""), 0, GW.SIGNAL_ORANGE
     end
   end
-  return "Full scan",
-    "Reads every listing at this auction house, about 170,000, in roughly 40 seconds. Tooltips and Sell then use prices current to the minute.",
+  return L["Full scan"],
+    L["Reads every listing at this auction house, about 170,000, in roughly 40 seconds. Tooltips and Sell then use prices current to the minute."],
     0,
     { 1, 1, 1 }
 end
@@ -404,16 +421,16 @@ render = function()
 
   local left = GW.ScanCooldownLeft()
   if run then
-    view.start:SetText("Scanning…")
+    view.start:SetText(L["Scanning…"])
     view.start:Disable()
     view.anyway:Hide()
   elseif left > 0 then
-    view.start:SetText("Next Scan in " .. GW.ClockText(left))
+    view.start:SetText(string.format(L["Next Scan in %s"], GW.ClockText(left)))
     view.start:Disable()
     -- right after your own successful scan the countdown is certain: no "anyway"
     view.anyway:SetShown(not (GW.lastScan and GW.lastScan.outcome == "saved"))
   else
-    view.start:SetText("Start Full Scan")
+    view.start:SetText(L["Start Full Scan"])
     view.start:Enable()
     view.anyway:Hide()
   end
@@ -424,7 +441,7 @@ render = function()
     line:SetText(
       x
           and string.format(
-            "%s  ·  %s listings  ·  %d s  ·  %s",
+            L["%s  ·  %s listings  ·  %d s  ·  %s"],
             date("%H:%M", x.at),
             n(x.total),
             x.secs or 0,
@@ -476,13 +493,13 @@ local function build(parent)
   view.anyway:SetPoint("LEFT", view.start, "RIGHT", 14, 0)
   view.anyway:SetNormalFontObject("GameFontDisableSmall")
   view.anyway:SetHighlightFontObject("GameFontHighlightSmall")
-  view.anyway:SetText("or scan anyway (the server may ignore it)")
+  view.anyway:SetText(L["or scan anyway (the server may ignore it)"])
   view.anyway:GetFontString():SetPoint("LEFT")
   view.anyway:SetScript("OnClick", function() GW.StartScan(true) end)
   view.anyway:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:SetText(
-      "The 15-minute clock is our estimate. The server may ignore an early request; that doesn't reset the clock.",
+      L["The 15-minute clock is our estimate. The server may ignore an early request; that doesn't reset the clock."],
       1,
       1,
       1,
@@ -495,7 +512,7 @@ local function build(parent)
 
   view.histHeader = fs(view, "GameFontNormal", "LEFT")
   view.histHeader:SetPoint("TOPLEFT", 40, -210)
-  view.histHeader:SetText("Recent scans")
+  view.histHeader:SetText(L["Recent scans"])
   view.history = {}
   for i = 1, KEEP_HISTORY do
     local l = fs(view, "GameFontHighlight", "LEFT")
@@ -506,7 +523,7 @@ local function build(parent)
   note:SetPoint("BOTTOMLEFT", 40, 20)
   note:SetWidth(880)
   note:SetText(
-    "The server allows one full scan every 15 minutes per account. Results are kept per auction house and replace the data pack's current prices until the next data pack is newer."
+    L["The server allows one full scan every 15 minutes per account. Results are kept per auction house and replace the data pack's current prices until the next data pack is newer."]
   )
 end
 

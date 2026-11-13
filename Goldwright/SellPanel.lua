@@ -3,24 +3,44 @@
 --- -> 3 Your listing (strategies, price, receipt, Post). One listing per click (or key press), then the
 --- next item is selected and searched (post queue, SELL-13). Rules without UI live in Selling.lua.
 local _, GW = ...
+local L = GW.L
 
 local W, H = 1000, 560
 local ROWS, ROW_H = 13, 30
-local DURATIONS = { { idx = 1, label = "2h" }, { idx = 2, label = "8h" }, { idx = 3, label = "24h" } }
+local DURATIONS = { { idx = 1, label = L["2h"] }, { idx = 2, label = L["8h"] }, { idx = 3, label = L["24h"] } }
 local STRATEGIES = {
-  { key = "fast", label = "Sell Fast" },
-  { key = "typical", label = "Typical" },
-  { key = "patient", label = "Patient" },
+  { key = "fast", label = L["Sell Fast"] },
+  { key = "typical", label = L["Typical"] },
+  { key = "patient", label = L["Patient"] },
 }
 local TABS = {
-  { key = "sell", label = "Sell" },
-  { key = "cancel", label = "My Auctions" },
-  { key = "shopping", label = "Shopping" },
-  { key = "scan", label = "Scan" },
+  { key = "sell", label = L["Sell"] },
+  { key = "cancel", label = L["My Auctions"] },
+  { key = "shopping", label = L["Shopping"] },
+  { key = "scan", label = L["Scan"] },
 }
 local PATIENT_MARKUP = 1.10 -- Patient = ~10% above typical (rule to tune)
 local FAST_OK_RATIO = 0.85 -- default to "Sell fast" only if it isn't >15% under typical
 local POST_TIMEOUT = 10 -- seconds to wait for the auction house to confirm a post
+
+--- The market check line under the price (SELL-7 / SELL-8), by price check kind: against the 7-day
+--- normal, else the typical price. "at" takes the reference price; the rest the percent, then it.
+local PRICE_CHECK = {
+  normal = {
+    below = L["%d%% below normal (%s): you may be giving it away."],
+    above = L["%d%% above normal (%s): unlikely to sell quickly."],
+    at = L["Right at normal (%s)."],
+    under = L["%d%% under normal (%s): a normal undercut."],
+    over = L["%d%% over normal (%s): may take longer to sell."],
+  },
+  typical = {
+    below = L["%d%% below the typical price (%s): you may be giving it away."],
+    above = L["%d%% above the typical price (%s): unlikely to sell quickly."],
+    at = L["Right at the typical price (%s)."],
+    under = L["%d%% under the typical price (%s): a normal undercut."],
+    over = L["%d%% over the typical price (%s): may take longer to sell."],
+  },
+}
 
 --- A bag item (all stacks of one item id) in the Choose column.
 ---@class SellBagItem
@@ -202,7 +222,7 @@ local function scanBags()
         hidden = ignored(info.itemID) and true or nil,
         name = (info.hyperlink and info.hyperlink:match("%[(.-)%]"))
           or (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(info.itemID))
-          or ("item " .. info.itemID),
+          or string.format(L["item %d"], info.itemID),
         isCommodity = Enum and Enum.ItemCommodityStatus and status == Enum.ItemCommodityStatus.Commodity,
       }
       groups[info.itemID] = g
@@ -273,19 +293,19 @@ local function renderBags()
       row.icon:SetDesaturated(g.hidden and true or false)
       row.name:SetText(g.name .. "  |cff9a9aa2×" .. g.count .. "|r")
       setColor(row.name, g.hidden and GREY or qualityColor(g.quality))
-      row.sub:SetText(g.total > 0 and ("about " .. GW.Money(g.total)) or "no price data")
+      row.sub:SetText(g.total > 0 and string.format(L["about %s"], GW.Money(g.total)) or L["no price data"])
       local here, d = packFor(g.itemID)
       local vendor = GW.VendorPrice(g.itemID)
       local note = ""
       if g.hidden then
-        note = "|cff9a9aa2hidden|r"
+        note = "|cff9a9aa2" .. L["hidden"] .. "|r"
       elseif vendor > 0 and g.unit and GW.Net(sellSide(), g.unit) <= vendor then
-        note = "|cfff59e4bvendor pays more|r"
+        note = "|cfff59e4b" .. L["vendor pays more"] .. "|r"
       elseif betterElsewhere(here, d) then
         local other, gain = betterElsewhere(here, d)
         note = string.format("|cff8fb0ff%s +%d%%|r", GW.HOUSE_NAMES[other], gain)
       elseif here and here.baitUnits and here.baitUnits > 0 then
-        note = "|cfff59e4bbait skipped|r"
+        note = "|cfff59e4b" .. L["bait skipped"] .. "|r"
       end
       row.note:SetText(note)
       row.sel:SetShown(state.sel and state.sel.itemID == g.itemID)
@@ -294,11 +314,13 @@ local function renderBags()
     end
   end
   local shown = #state.bags - (state.showHidden and state.hiddenCount or 0)
-  panel.bagFooter:SetText(string.format("%d sellable items · about %s", shown, GW.Money(total)))
+  panel.bagFooter:SetText(
+    GW.Plural(shown, "%d sellable item · about %s", "%d sellable items · about %s", GW.Money(total))
+  )
   if (state.hiddenCount or 0) > 0 then
     panel.hiddenLink:SetText(
       string.format(
-        state.showHidden and "|cff8fb0ffhide %d again|r" or "|cff8fb0ff%d hidden · show|r",
+        state.showHidden and L["|cff8fb0ffhide %d again|r"] or L["|cff8fb0ff%d hidden · show|r"],
         state.hiddenCount
       )
     )
@@ -364,9 +386,9 @@ end
 ---@param qty number
 ---@return string
 local function postLabel(g, qty)
-  if g.isCommodity then return string.format("Post %d × %s", qty, g.name) end
-  if g.count > 1 then return string.format("Post 1 of %d · %s", g.count, g.name) end
-  return "Post " .. g.name
+  if g.isCommodity then return string.format(L["Post %d × %s"], qty, g.name) end
+  if g.count > 1 then return string.format(L["Post 1 of %d · %s"], g.count, g.name) end
+  return string.format(L["Post %s"], g.name)
 end
 
 --- Redraws column 3 for the current price, quantity and duration: strategy buttons, receipt
@@ -381,7 +403,7 @@ local function recalc()
     local p = state.prices and state.prices[b.key]
     if p then
       b:SetText(string.format("%s\n%s", b.label, GW.Money(p)))
-      b.receive:SetText("get " .. GW.Money(youReceive(p, qty)))
+      b.receive:SetText(string.format(L["get %s"], GW.Money(youReceive(p, qty))))
       b:Enable()
     else
       b:SetText(b.label)
@@ -410,45 +432,39 @@ local function recalc()
   end
   local gross = unit * qty
   local cut = math.floor(gross * sellCut() + 0.5)
-  panel.r1L:SetText(string.format("Listing total (%d × %s)", qty, GW.Money(unit)))
+  panel.r1L:SetText(string.format(L["Listing total (%d × %s)"], qty, GW.Money(unit)))
   panel.r1R:SetText(GW.Money(gross))
-  panel.r2L:SetText(string.format("Auction house cut (%d%%)", math.floor(sellCut() * 100 + 0.5)))
+  panel.r2L:SetText(string.format(L["Auction house cut (%d%%)"], math.floor(sellCut() * 100 + 0.5)))
   panel.r2R:SetText("−" .. GW.Money(cut))
-  panel.r3L:SetText("You receive if all sell")
+  panel.r3L:SetText(L["You receive if all sell"])
   panel.r3R:SetText(GW.Money(gross - cut))
-  panel.r4L:SetText("Deposit now (back when it sells)")
+  panel.r4L:SetText(L["Deposit now (back when it sells)"])
   panel.r4R:SetText(deposit and GW.Money(deposit) or "?")
 
   -- market check line (SELL-7 / SELL-8): against the 7-day normal, else today's typical price
   local here = packFor(g.itemID)
   local normal = here and (here.avg7 or here.avg30)
-  local ref, refName = normal, "normal"
+  local ref, messages = normal, PRICE_CHECK.normal
   if not ref then
-    ref, refName = (state.stats and state.stats.mv) or (here and here.mv), "the typical price"
+    ref, messages = (state.stats and state.stats.mv) or (here and here.mv), PRICE_CHECK.typical
   end
   local warn, warnColor = "", GREY
   local kind, pct = GW.PriceCheck(unit, ref)
-  local refText = ref and string.format("%s (%s)", refName, GW.Money(ref)) or ""
-  if kind == "below" then
-    warn, warnColor = string.format("%d%% below %s: you may be giving it away.", pct, refText), GW.SIGNAL_ORANGE
-  elseif kind == "above" then
-    warn, warnColor = string.format("%d%% above %s: unlikely to sell quickly.", pct, refText), GW.SIGNAL_ORANGE
-  elseif kind == "at" then
-    warn = string.format("Right at %s.", refText)
-  elseif kind == "under" then
-    warn = string.format("%d%% under %s: a normal undercut.", pct, refText)
-  elseif kind == "over" then
-    warn = string.format("%d%% over %s: may take longer to sell.", pct, refText)
+  if kind == "at" then
+    warn = string.format(messages.at, GW.Money(ref))
+  elseif kind then
+    warn = string.format(messages[kind], pct, GW.Money(ref))
+    if kind == "below" or kind == "above" then warnColor = GW.SIGNAL_ORANGE end
   end
   local vendor = GW.VendorPrice(g.itemID)
   if vendor > 0 and unit > 0 and GW.Net(sellSide(), unit) <= vendor then
     warn, warnColor =
-      string.format("A vendor pays %s each, more than you'd net here. Sell to a vendor instead.", GW.Money(vendor)),
+      string.format(L["A vendor pays %s each, more than you'd net here. Sell to a vendor instead."], GW.Money(vendor)),
       GW.SIGNAL_ORANGE
   end
   if rounded then
     warn, warnColor =
-      string.format("Gear posts in whole silver: this posts at %s. %s", GW.Money(unit), warn), GW.SIGNAL_ORANGE
+      string.format(L["Gear posts in whole silver: this posts at %s."], GW.Money(unit)) .. " " .. warn, GW.SIGNAL_ORANGE
   end
   panel.warn:SetText(warn)
   setColor(panel.warn, warnColor)
@@ -457,7 +473,9 @@ local function recalc()
   local p = state.pending
   local confirmWait = p and p.warning and GetTime() - (p.warnedAt or 0) < GW.CONFIRM_DELAY
   panel.post:SetText(
-    loading and "Getting live prices…" or p and p.warning and "Confirm: " .. postLabel(g, qty) or postLabel(g, qty)
+    loading and L["Getting live prices…"]
+      or p and p.warning and string.format(L["Confirm: %s"], postLabel(g, qty))
+      or postLabel(g, qty)
   )
   panel.post:SetEnabled(unit > 0 and not loading and not confirmWait and (not p or p.warning) and true or false)
 end
@@ -520,57 +538,45 @@ local function applyDefaultStrategy()
     state.strategy = nil
     setUnitPrice(0)
     panel.why:SetText(
-      state.searching and "Live listings loading…" or "No listings and no price data: type your own price."
+      state.searching and L["Live listings loading…"] or L["No listings and no price data: type your own price."]
     )
     recalc()
     return
   end
-  local loading = state.searching and not s and "Data pack prices while live listings load. " or ""
+  local loading = state.searching and not s and (L["Data pack prices while live listings load."] .. " ") or ""
   local bait = (s and s.baitUnits > 0)
-      and string.format(
-        " Skipped %d likely bait listing%s at %s.",
+      and (" " .. GW.Plural(
         s.baitUnits,
-        s.baitUnits == 1 and "" or "s",
+        "Skipped %d likely bait listing at %s.",
+        "Skipped %d likely bait listings at %s.",
         GW.Money(s.baitPrice)
-      )
+      ))
     or ""
   -- Judge the price Sell fast would post (for gear that's a whole silver under, e.g. 2s on a 3s wall),
   -- not the cheapest listing, and never default to netting less than a vendor pays.
   local vendor = GW.VendorPrice(state.sel.itemID)
   local fastBelowVendor = vendor > 0 and GW.Net(sellSide(), P.fast) <= vendor and GW.Net(sellSide(), P.typical) > vendor
   if P.own then
-    chooseStrategy("fast", loading .. "Your own listing is already the cheapest; matching it." .. bait)
+    chooseStrategy("fast", loading .. L["Your own listing is already the cheapest; matching it."] .. bait)
   elseif fastBelowVendor then
     chooseStrategy(
       "typical",
-      string.format(
-        "%sTypical chosen: selling fast would net less than a vendor pays (%s).%s",
-        loading,
-        GW.Money(vendor),
-        bait
-      )
+      loading
+        .. string.format(L["Typical chosen: selling fast would net less than a vendor pays (%s)."], GW.Money(vendor))
+        .. bait
     )
   elseif P.typicalPrice and P.fast < P.typicalPrice * FAST_OK_RATIO then
     chooseStrategy(
       "typical",
-      string.format(
-        "%sTypical chosen: selling fast would be %d%% under the typical price.%s",
-        loading,
-        math.floor((1 - P.fast / P.typicalPrice) * 100 + 0.5),
-        bait
-      )
+      loading
+        .. string.format(
+          L["Typical chosen: selling fast would be %d%% under the typical price."],
+          math.floor((1 - P.fast / P.typicalPrice) * 100 + 0.5)
+        )
+        .. bait
     )
   else
-    chooseStrategy(
-      "fast",
-      string.format(
-        "%sSell Fast: %s the cheapest listing (%s).%s",
-        loading,
-        GW.UndercutText(not state.sel.isCommodity),
-        GW.Money(P.cheapest),
-        bait
-      )
-    )
+    chooseStrategy("fast", loading .. GW.SellFastText(not state.sel.isCommodity, GW.Money(P.cheapest)) .. bait)
   end
 end
 
@@ -591,7 +597,8 @@ local function renderMarket()
   if d then
     for _, side in ipairs({ "A", "H", "N" }) do
       if side ~= sellSide() and d[side] and d[side].mv then
-        others[#others + 1] = (side == "N" and "BW " or side == "H" and "Horde " or "Ally ") .. GW.Money(d[side].mv)
+        local label = side == "N" and L["BW %s"] or side == "H" and L["Horde %s"] or L["Ally %s"]
+        others[#others + 1] = string.format(label, GW.Money(d[side].mv))
       end
     end
   end
@@ -603,7 +610,7 @@ local function renderMarket()
       r.price:SetText(GW.Money(x.price))
       r.qty:SetText(tostring(x.qty))
       if i < s.firstRealIndex then
-        r.note:SetText("likely bait, skipped")
+        r.note:SetText(L["likely bait, skipped"])
         setColor(r.note, GW.SIGNAL_ORANGE)
         r.price:SetTextColor(0.55, 0.55, 0.58)
         r.qty:SetTextColor(0.55, 0.55, 0.58)
@@ -611,13 +618,13 @@ local function renderMarket()
         r.price:SetTextColor(1, 1, 1)
         r.qty:SetTextColor(1, 1, 1)
         if x.own then
-          r.note:SetText("yours")
+          r.note:SetText(L["yours"])
           setColor(r.note, GW.GOLD)
         elseif i == s.firstRealIndex then
-          r.note:SetText("cheapest real seller")
+          r.note:SetText(L["cheapest real seller"])
           setColor(r.note, GW.SIGNAL_BLUE)
         elseif s.mv and x.price == s.mv then
-          r.note:SetText("typical price")
+          r.note:SetText(L["typical price"])
           setColor(r.note, GREY)
         else
           r.note:SetText("")
@@ -690,7 +697,7 @@ local function readResults(itemKeyFromEvent, eventName)
   if #list == 0 and state.searching then return end
   state.searching = false
   state.stats = GW.MarketStats(list)
-  panel.listStatus:SetText(state.stats and "searched just now" or "no other listings")
+  panel.listStatus:SetText(state.stats and L["searched just now"] or L["no other listings"])
   renderMarket()
   applyDefaultStrategy()
 end
@@ -751,7 +758,7 @@ search = function(g)
     end)
     return
   end
-  panel.listStatus:SetText("searching…")
+  panel.listStatus:SetText(L["searching…"])
   -- The normal search answers within a second on Forever; the sell search never answered in game
   -- (log 2026-11-10: every sell search timed out, the general one then answered at once), so the
   -- sell search is only the fallback after 4 seconds.
@@ -768,8 +775,8 @@ search = function(g)
     if not state.stats then
       -- The auction house did answer, with nothing: none listed here (e.g. at Blackwater).
       panel.listStatus:SetText(
-        state.answered and ("none listed at " .. GW.HOUSE_NAMES[sellSide()] .. " right now")
-          or "no answer from the auction house"
+        state.answered and string.format(L["none listed at %s right now"], GW.HOUSE_NAMES[sellSide()])
+          or L["no answer from the auction house"]
       )
       applyDefaultStrategy()
     end
@@ -784,27 +791,30 @@ local function renderStatus()
   local days = GW.PackAgeDays()
   local packText
   if not pack then
-    packText = "|cfff59e4bNo data pack for "
-      .. h.region
-      .. " "
-      .. h.ruleset
-      .. ": prices come from live listings only|r"
+    packText = "|cfff59e4b"
+      .. string.format(L["No data pack for %s %s: prices come from live listings only"], h.region, h.ruleset)
+      .. "|r"
   elseif days and days > GW.STALE_DAYS then
-    packText = string.format("|cfff59e4bData pack is %d days old: update Goldwright Data|r", math.floor(days))
+    packText = "|cfff59e4b"
+      .. GW.Plural(
+        math.floor(days),
+        "Data pack is %d day old: update Goldwright Data",
+        "Data pack is %d days old: update Goldwright Data"
+      )
+      .. "|r"
   else
-    packText = "Data pack: snapshot " .. GW.Age(pack.snapshotAt)
+    packText = string.format(L["Data pack: snapshot %s"], GW.Age(pack.snapshotAt))
   end
   local scanText = GW.LastScanText and GW.LastScanText(sellSide())
   panel.status:SetText(
     string.format(
-      "%s · %s · %s     %s     %s     Searches this minute: %d / %d",
+      "%s · %s · %s     %s     %s     %s",
       h.region,
       h.ruleset,
       GW.HOUSE_NAMES[sellSide()],
       packText,
-      scanText and ("Last scan " .. scanText) or "No full scan yet",
-      GW.SearchesThisMinute(),
-      GW.SEARCH_LIMIT
+      scanText and string.format(L["Last scan %s"], scanText) or L["No full scan yet"],
+      string.format(L["Searches this minute: %d / %d"], GW.SearchesThisMinute(), GW.SEARCH_LIMIT)
     )
   )
 end
@@ -828,7 +838,7 @@ local function clearSelection(message)
   state.sel, state.stats, state.strategy, state.token = nil, nil, nil, (state.token or 0) + 1
   panel.col2:Hide()
   panel.col3:Hide()
-  panel.empty:SetText(message or "Choose an item on the left to see its market and price it.")
+  panel.empty:SetText(message or L["Choose an item on the left to see its market and price it."])
   panel.empty:Show()
   renderBags()
 end
@@ -847,9 +857,9 @@ local function selectItem(g)
   setColor(panel.itemName, qualityColor(g.quality))
   panel.itemInfo:SetText(
     string.format(
-      "You have %d · %s",
+      L["You have %d · %s"],
       g.count,
-      g.isCommodity and "commodity: one listing for any quantity" or "item: one auction per click"
+      g.isCommodity and L["commodity: one listing for any quantity"] or L["item: one auction per click"]
     )
   )
   panel.qty:SetText(tostring(g.isCommodity and g.count or 1))
@@ -931,7 +941,7 @@ local function tryAdvance()
     end
     selectItem(nextItem)
   else
-    clearSelection("That was the last item in the list. Choose another item, or close the auction house.")
+    clearSelection(L["That was the last item in the list. Choose another item, or close the auction house."])
   end
 end
 
@@ -944,7 +954,7 @@ local function onPosted()
   state.recent = nil
   GoldwrightDB.durations = GoldwrightDB.durations or {}
   GoldwrightDB.durations[p.itemID] = p.duration
-  toast(string.format("Posted %d × %s at %s each.", p.qty, p.name, GW.Money(p.unit)), GW.SIGNAL_BLUE)
+  toast(string.format(L["Posted %d × %s at %s each."], p.qty, p.name, GW.Money(p.unit)), GW.SIGNAL_BLUE)
   GW.Log("posted %d x %s at %d (%s)", p.qty, p.name, p.unit, p.commodity and "commodity" or "item")
   state.advance = {
     itemID = p.itemID,
@@ -965,10 +975,10 @@ end
 local function postSelected()
   if not (panel and panel:IsShown() and GW.activeTab == "sell") then return end
   local g = state.sel
-  if not g then return toast("Choose an item first.", GW.SIGNAL_ORANGE) end
+  if not g then return toast(L["Choose an item first."], GW.SIGNAL_ORANGE) end
   local p = state.pending
-  if p and not p.warning then return toast("Waiting for the auction house…", GREY) end
-  if InCombatLockdown and InCombatLockdown() then return toast("Not in combat.", GW.SIGNAL_ORANGE) end
+  if p and not p.warning then return toast(L["Waiting for the auction house…"], GREY) end
+  if InCombatLockdown and InCombatLockdown() then return toast(L["Not in combat."], GW.SIGNAL_ORANGE) end
 
   -- The auction house asked us to confirm this post (AUCTION_HOUSE_POST_WARNING): this click confirms.
   if p and p.warning then
@@ -981,17 +991,17 @@ local function postSelected()
       C_AuctionHouse.ConfirmPostItem(loc, p.duration, 1, nil, p.unit)
     end
     p.at = GetTime()
-    toast("Confirmed. Waiting for the auction house…", GREY)
+    toast(L["Confirmed. Waiting for the auction house…"], GREY)
     recalc()
     return
   end
 
   local unit, qty = postUnit(), quantity()
-  if unit <= 0 then return toast("Set a price first.", GW.SIGNAL_ORANGE) end
+  if unit <= 0 then return toast(L["Set a price first."], GW.SIGNAL_ORANGE) end
   local loc = findLocation(g.itemID)
-  if not loc then return toast("Can't find that item in your bags any more.", GW.SIGNAL_ORANGE) end
+  if not loc then return toast(L["Can't find that item in your bags any more."], GW.SIGNAL_ORANGE) end
   if C_AuctionHouse.IsThrottledMessageSystemReady and not C_AuctionHouse.IsThrottledMessageSystemReady() then
-    return toast("The auction house is busy: click again in a moment.", GW.SIGNAL_ORANGE)
+    return toast(L["The auction house is busy: click again in a moment."], GW.SIGNAL_ORANGE)
   end
 
   local order = {}
@@ -1020,11 +1030,11 @@ local function postSelected()
     C_AuctionHouse.PostItem(loc, state.duration, 1, nil, unit)
   end
   GW.Log("post sent: %d x %s at %d, duration %d", qty, g.name, unit, state.duration)
-  toast("Posting…", GREY)
+  toast(L["Posting…"], GREY)
   recalc()
   C_Timer.After(POST_TIMEOUT, function()
     if state.pending == token and not token.warning then
-      toast("No answer from the auction house. Check your auctions before posting again.", GW.SIGNAL_ORANGE)
+      toast(L["No answer from the auction house. Check your auctions before posting again."], GW.SIGNAL_ORANGE)
       finishPending()
     end
   end)
@@ -1100,7 +1110,7 @@ local function createPanel()
       if b.SetMotionScriptsWhileDisabled then b:SetMotionScriptsWhileDisabled(true) end
       b:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-        GameTooltip:SetText(t.label .. ": coming in a later build")
+        GameTooltip:SetText(string.format(L["%s: coming in a later build"], t.label))
         GameTooltip:Show()
       end)
       b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1110,7 +1120,7 @@ local function createPanel()
     panel.tabButtons[i] = b
     prev = b
   end
-  local gear = UI.Button(panel, "Settings", 90, 22)
+  local gear = UI.Button(panel, L["Settings"], 90, 22)
   gear:SetPoint("TOPRIGHT", -14, -30)
   gear:SetScript("OnClick", function()
     if GW.OpenSettings then GW.OpenSettings() end
@@ -1128,7 +1138,7 @@ local function createPanel()
   panel.sellView = view
 
   -- Column 1: choose ----------------------------------------------------------
-  header(view, "1 · Choose", 12, -8)
+  header(view, L["1 · Choose"], 12, -8)
   panel.rows = {}
   local list = CreateFrame("Frame", nil, view)
   list:SetPoint("TOPLEFT", 6, -28)
@@ -1178,7 +1188,7 @@ local function createPanel()
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
       GameTooltip:SetBagItem(self.g.bag, self.g.slot)
       GameTooltip:AddLine(
-        self.g.hidden and "Right-click: show in this list again" or "Right-click: hide from this list",
+        self.g.hidden and L["Right-click: show in this list again"] or L["Right-click: hide from this list"],
         0.6,
         0.6,
         0.65
@@ -1207,14 +1217,14 @@ local function createPanel()
   panel.empty = fs(view, "GameFontDisable", "CENTER")
   panel.empty:SetPoint("CENTER", view, "CENTER", 124, 0)
   panel.empty:SetWidth(600)
-  panel.empty:SetText("Choose an item on the left to see its market and price it.")
+  panel.empty:SetText(L["Choose an item on the left to see its market and price it."])
 
   -- Column 2: market ----------------------------------------------------------
   local col2 = CreateFrame("Frame", nil, view)
   col2:SetPoint("TOPLEFT", 258, -8)
   col2:SetSize(380, 440)
   panel.col2 = col2
-  header(col2, "2 · Market", 0, 0)
+  header(col2, L["2 · Market"], 0, 0)
 
   panel.iconButton = CreateFrame("Button", nil, col2)
   panel.iconButton:SetSize(34, 34)
@@ -1235,8 +1245,12 @@ local function createPanel()
   panel.itemInfo:SetPoint("TOPLEFT", panel.itemName, "BOTTOMLEFT", 0, -3)
   setColor(panel.itemInfo, GREY)
 
-  local stats =
-    { { "Typical price", "st1" }, { "Cheapest real", "st2" }, { "Listings", "st3" }, { "Other houses", "st4" } }
+  local stats = {
+    { L["Typical price"], "st1" },
+    { L["Cheapest real"], "st2" },
+    { L["Listings"], "st3" },
+    { L["Other houses"], "st4" },
+  }
   for i, s in ipairs(stats) do
     local x = (i - 1) * 95
     local lab = fs(col2, "GameFontDisableSmall", "LEFT")
@@ -1247,18 +1261,18 @@ local function createPanel()
     panel[s[2]] = val
   end
 
-  local lh = header(col2, "Cheapest listings", 0, -120)
+  local lh = header(col2, L["Cheapest listings"], 0, -120)
   panel.listStatus = fs(col2, "GameFontDisableSmall", "LEFT")
   panel.listStatus:SetPoint("LEFT", lh, "RIGHT", 10, 0)
   local c1 = fs(col2, "GameFontDisableSmall", "LEFT")
   c1:SetPoint("TOPLEFT", 0, -138)
-  c1:SetText("Price each")
+  c1:SetText(L["Price each"])
   local c2 = fs(col2, "GameFontDisableSmall", "LEFT")
   c2:SetPoint("TOPLEFT", 110, -138)
-  c2:SetText("Quantity")
+  c2:SetText(L["Quantity"])
   local c3 = fs(col2, "GameFontDisableSmall", "LEFT")
   c3:SetPoint("TOPLEFT", 190, -138)
-  c3:SetText("Note")
+  c3:SetText(L["Note"])
   panel.listRows = {}
   for i = 1, 7 do
     local y = -154 - (i - 1) * 18
@@ -1282,7 +1296,7 @@ local function createPanel()
   col3:SetPoint("TOPLEFT", 658, -8)
   col3:SetSize(318, 440)
   panel.col3 = col3
-  header(col3, "3 · Your listing", 0, 0)
+  header(col3, L["3 · Your listing"], 0, 0)
 
   panel.stratButtons = {}
   for i, st in ipairs(STRATEGIES) do
@@ -1295,11 +1309,11 @@ local function createPanel()
     b.receive:SetPoint("TOP", b, "BOTTOM", 0, -2)
     b:SetScript("OnClick", function()
       local reasons = {
-        fast = "Sell Fast: " .. GW.UndercutText(state.sel and not state.sel.isCommodity) .. " the cheapest listing.",
+        fast = GW.SellFastText(state.sel and not state.sel.isCommodity),
         typical = (state.sel and not state.sel.isCommodity)
-            and "Typical: at the typical price (gear posts in whole silver)."
-          or "Typical: 1c under the typical price.",
-        patient = "Patient: about 10% above the typical price; best posted when supply is low.",
+            and L["Typical: at the typical price (gear posts in whole silver)."]
+          or L["Typical: 1c under the typical price."],
+        patient = L["Patient: about 10% above the typical price; best posted when supply is low."],
       }
       chooseStrategy(st.key, reasons[st.key])
     end)
@@ -1311,7 +1325,7 @@ local function createPanel()
 
   local pl = fs(col3, "GameFontNormalSmall", "LEFT")
   pl:SetPoint("TOPLEFT", 0, -116)
-  pl:SetText("Price per item (or type your own)")
+  pl:SetText(L["Price per item (or type your own)"])
   if MoneyInputFrame_SetCopper and MoneyInputFrame_GetCopper then
     panel.money = CreateFrame("Frame", "GoldwrightSellPrice", col3, "MoneyInputFrameTemplate")
     panel.money:SetPoint("TOPLEFT", 4, -132)
@@ -1323,7 +1337,7 @@ local function createPanel()
         if not state.settingPrice and getUnitPrice() ~= chosen and getUnitPrice() > 0 then
           state.strategy = nil
           state.typed = true
-          panel.why:SetText("Your own price.")
+          panel.why:SetText(L["Your own price."])
         end
         recalc()
       end)
@@ -1344,7 +1358,7 @@ local function createPanel()
 
   local ql = fs(col3, "GameFontNormalSmall", "LEFT")
   ql:SetPoint("TOPLEFT", 0, -162)
-  ql:SetText("Quantity")
+  ql:SetText(L["Quantity"])
   panel.qty = CreateFrame("EditBox", nil, col3, "InputBoxTemplate")
   panel.qty:SetSize(50, 22)
   panel.qty:SetPoint("TOPLEFT", 6, -178)
@@ -1353,7 +1367,7 @@ local function createPanel()
   panel.qty:SetMaxLetters(5)
   panel.qty:SetScript("OnTextChanged", recalc)
   panel.qty:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-  panel.allButton = UI.Button(col3, "All", 44, 22)
+  panel.allButton = UI.Button(col3, L["All"], 44, 22)
   panel.allButton:SetPoint("LEFT", panel.qty, "RIGHT", 6, 0)
   panel.allButton:SetScript("OnClick", function()
     if state.sel then panel.qty:SetText(tostring(state.sel.count)) end
@@ -1361,7 +1375,7 @@ local function createPanel()
 
   local dl = fs(col3, "GameFontNormalSmall", "LEFT")
   dl:SetPoint("TOPLEFT", 150, -162)
-  dl:SetText("Duration")
+  dl:SetText(L["Duration"])
   panel.durButtons = {}
   for i, d in ipairs(DURATIONS) do
     local b = UI.Button(col3, d.label, 50, 22)
@@ -1397,12 +1411,12 @@ local function createPanel()
   panel.toast = fs(col3, "GameFontHighlightSmall", "LEFT")
   panel.toast:SetPoint("BOTTOMLEFT", 0, 58)
   panel.toast:SetWidth(314)
-  panel.post = UI.Button(col3, "Post", 314, 30)
+  panel.post = UI.Button(col3, L["Post"], 314, 30)
   panel.post:SetPoint("BOTTOMLEFT", 0, 22)
   panel.post:SetScript("OnClick", postSelected)
   local postNote = fs(col3, "GameFontDisableSmall", "RIGHT")
   postNote:SetPoint("TOPRIGHT", panel.post, "BOTTOMRIGHT", 0, -4)
-  postNote:SetText("One listing per click · then the next item is ready")
+  postNote:SetText(L["One listing per click · then the next item is ready"])
 
   col2:Hide()
   col3:Hide()
@@ -1459,7 +1473,7 @@ GW.AuctionHouseOpen = ahOpen
 --- Shows or hides the panel; only at the auction house.
 function GW.ToggleSellPanel()
   if not ahOpen() then
-    GW.Print("Open the auction house first.")
+    GW.Print(L["Open the auction house first."])
     return
   end
   if not panel then createPanel() end
@@ -1475,7 +1489,7 @@ end
 ---@param key string "sell", "cancel", "shopping" or "scan"
 function GW.OpenTab(key)
   if not ahOpen() then
-    GW.Print("Open the auction house first.")
+    GW.Print(L["Open the auction house first."])
     return
   end
   if not panel then createPanel() end
@@ -1501,7 +1515,7 @@ function GW.SellItem(itemID)
     end
   end
   clearSelection(
-    "That item isn't in your bags yet: cancelled auctions come back by mail. Take it from the mailbox, then post it here."
+    L["That item isn't in your bags yet: cancelled auctions come back by mail. Take it from the mailbox, then post it here."]
   )
   return false
 end
@@ -1567,7 +1581,7 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
     if state.pending then
       state.pending.warning = true
       state.pending.warnedAt = GetTime()
-      toast("The auction house asks you to confirm this price. Click Post again to confirm.", GW.SIGNAL_ORANGE)
+      toast(L["The auction house asks you to confirm this price. Click Post again to confirm."], GW.SIGNAL_ORANGE)
       recalc()
       C_Timer.After(GW.CONFIRM_DELAY + 0.05, recalc)
     end
@@ -1575,7 +1589,6 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
     local p = state.pending
     if p and not p.warning and GetTime() - p.at < POST_TIMEOUT and GW.IsAuctionError(arg1, arg2) then
       toast(arg2, GW.SIGNAL_ORANGE)
-      GW.Log("post error: %s", arg2)
       finishPending()
     end
   elseif event == "PLAYER_REGEN_DISABLED" then
@@ -1586,9 +1599,10 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
     GW.Log("event %s (item %s)", event, tostring(argItem))
     if argItem == nil or argItem == state.sel.itemID then readResults(type(arg1) == "table" and arg1 or nil, event) end
   elseif event == "AUCTION_HOUSE_SHOW_ERROR" or event == "AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED" then
-    GW.Log("event %s (%s)", event, tostring(arg1))
+    -- Diagnostics.lua records the error with the requests before it.
     if state.pending and event == "AUCTION_HOUSE_SHOW_ERROR" then
-      toast("The auction house refused that post.", GW.SIGNAL_ORANGE)
+      local _, reason = GW.AuctionErrorName(arg1)
+      toast(string.format(L["The auction house refused that post: %s."], reason), GW.SIGNAL_ORANGE)
       finishPending()
     end
   end

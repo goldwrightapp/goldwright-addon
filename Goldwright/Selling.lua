@@ -1,6 +1,7 @@
 --- Selling and cancelling rules without any UI (SELL-4, 7, 8, 13, 15, 16; CXL-2, 6), so they can be
 --- tested outside the game (server/test/addon.test.mjs).
 local _, GW = ...
+local L = GW.L
 
 --- Rounds a gear buyout down to whole silver, at least 1s. Gear (non-commodity) auctions only
 --- take whole silver: the server answers a buyout with copper in it with "Internal auction error"
@@ -39,9 +40,32 @@ end
 ---@return string text
 function GW.UndercutText(wholeSilver)
   local rule = GW.Opt("undercut")
-  if rule == "match" then return "matching" end
-  if rule == "pct" then return GW.Opt("undercutPct") .. "% under" end
-  return wholeSilver and "1s under" or "1c under"
+  if rule == "match" then return L["matching"] end
+  if rule == "pct" then return string.format(L["%s%% under"], GW.Opt("undercutPct")) end
+  return wholeSilver and L["1s under"] or L["1c under"]
+end
+
+--- The Sell Fast reason as one whole sentence per undercut rule (a translation can't build it from
+--- the phrase above): "Sell Fast: 1c under the cheapest listing (74c)."
+---@param wholeSilver boolean|nil gear
+---@param cheapest string|nil the cheapest listing as money text; nil leaves the price out
+---@return string text
+function GW.SellFastText(wholeSilver, cheapest)
+  local rule = GW.Opt("undercut")
+  local pct = GW.Opt("undercutPct")
+  if cheapest then
+    if rule == "match" then return string.format(L["Sell Fast: matching the cheapest listing (%s)."], cheapest) end
+    if rule == "pct" then return string.format(L["Sell Fast: %s%% under the cheapest listing (%s)."], pct, cheapest) end
+    return string.format(
+      wholeSilver and L["Sell Fast: 1s under the cheapest listing (%s)."]
+        or L["Sell Fast: 1c under the cheapest listing (%s)."],
+      cheapest
+    )
+  end
+  if rule == "match" then return L["Sell Fast: matching the cheapest listing."] end
+  if rule == "pct" then return string.format(L["Sell Fast: %s%% under the cheapest listing."], pct) end
+  return wholeSilver and L["Sell Fast: 1s under the cheapest listing."]
+    or L["Sell Fast: 1c under the cheapest listing."]
 end
 
 --- SELL-7 / SELL-8: how a unit price compares with normal. The kind is "below" (under the warning
@@ -121,7 +145,7 @@ function GW.NextUndercut(rows)
   return nil
 end
 
-local BANDS = { [0] = "Short", [1] = "Medium", [2] = "Long", [3] = "Very long" }
+local BANDS = { [0] = L["Short"], [1] = L["Medium"], [2] = L["Long"], [3] = L["Very long"] }
 
 --- Time left as "1 h 20 min" / "23 h" from seconds; the time-left band name when the client gives
 --- no seconds.
@@ -131,9 +155,9 @@ local BANDS = { [0] = "Short", [1] = "Medium", [2] = "Long", [3] = "Very long" }
 function GW.TimeLeftText(seconds, band)
   if seconds and seconds > 0 then
     local h, m = math.floor(seconds / 3600), math.floor((seconds % 3600) / 60)
-    if h >= 2 then return h .. " h" end
-    if h == 1 then return "1 h " .. m .. " min" end
-    return math.max(1, m) .. " min"
+    if h >= 2 then return string.format(L["%d h"], h) end
+    if h == 1 then return string.format(L["%d h %d min"], h, m) end
+    return string.format(L["%d min"], math.max(1, m))
   end
   return BANDS[band] or "?"
 end
@@ -181,7 +205,13 @@ function GW.HistoryWindow(hist, histFrom, endEpoch, days)
     values[k] = v
     if v then known = known + 1 end
   end
-  return { values = values, firstDay = histFrom + (first - 1) * 86400, known = known, total = total, avg = sum / total }
+  return {
+    values = values,
+    firstDay = histFrom + (first - 1) * 86400,
+    known = known,
+    total = total,
+    avg = sum / total,
+  }
 end
 
 --- Hours the player's clock is ahead of UTC (e.g. -5 in New York in winter, 5.5 in India), from
@@ -216,15 +246,38 @@ function GW.LocalHours(hours, offset)
   return units, prices
 end
 
+-- One label per hour, so a language with a 24-hour clock can say "0 Uhr" ... "23 Uhr".
+local HOUR_LABELS = {
+  [0] = L["12am"],
+  L["1am"],
+  L["2am"],
+  L["3am"],
+  L["4am"],
+  L["5am"],
+  L["6am"],
+  L["7am"],
+  L["8am"],
+  L["9am"],
+  L["10am"],
+  L["11am"],
+  L["12pm"],
+  L["1pm"],
+  L["2pm"],
+  L["3pm"],
+  L["4pm"],
+  L["5pm"],
+  L["6pm"],
+  L["7pm"],
+  L["8pm"],
+  L["9pm"],
+  L["10pm"],
+  L["11pm"],
+}
+
 --- "12am", "9am", "12pm", "6pm" for a local hour (24 wraps to midnight).
 ---@param h number hour 0..23
 ---@return string label
-function GW.HourLabel(h)
-  h = h % 24
-  if h == 0 then return "12am" end
-  if h == 12 then return "12pm" end
-  return h < 12 and (h .. "am") or ((h - 12) .. "pm")
-end
+function GW.HourLabel(h) return HOUR_LABELS[math.floor(h) % 24] end
 
 GW.POST_WINDOW = 4 -- hours in the "best time to post" window
 GW.FLAT_SUPPLY = 0.9 -- a window under 90% of the day's average supply is worth pointing out
@@ -286,9 +339,9 @@ end
 ---@return string|nil text nil without a window
 function GW.BestPostText(win)
   if not win then return nil end
-  if win.flat then return "Supply is about the same all day: post whenever suits you." end
+  if win.flat then return L["Supply is about the same all day: post whenever suits you."] end
   return string.format(
-    "Supply is lowest %s–%s: listings sell fastest.",
+    L["Supply is lowest %s–%s: listings sell fastest."],
     GW.HourLabel(win.start),
     GW.HourLabel(win.stop)
   )

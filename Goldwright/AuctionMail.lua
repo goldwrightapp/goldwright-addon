@@ -2,11 +2,13 @@
 --- auctions (GetInboxInvoiceInfo: sale total and "Auction House Cut") without opening or taking the
 --- mail, learns each house's real rate, and uses it everywhere prices are netted (GW.CUT, GW.Net).
 ---
---- Which house: from the mail's sender ("Alliance Auction House", "Horde Auction House", Blackwater's).
+--- Which house: from the mail's sender ("Alliance Auction House", "Horde Auction House", Blackwater's),
+--- by the faction name in the client's language (GW.MailHouse), so it works on every client.
 --- Rate: the percentage (in 0.5% steps) that explains the most invoices, since the game rounds each
 --- cut down to whole copper (86c at 5% is a 4c cut). Stored in GoldwrightDB.ahCut; buyer names are
 --- never read or stored. Read-only calls: GetInboxNumItems, GetInboxHeaderInfo, GetInboxInvoiceInfo.
 local _, GW = ...
+local L = GW.L
 
 --- The assumed cuts, before any sale is measured (Core.lua's GW.CUT at load).
 GW.CUT_ASSUMED = { A = GW.CUT.A, H = GW.CUT.H, N = GW.CUT.N }
@@ -16,15 +18,40 @@ local MAX_SALES = 50
 --- (a 10c sale with a 1c cut would fit anything from 10% to 19%).
 GW.CUT_MIN_SALE = 200
 
---- The house of an auction house mail, from its sender.
+--- A faction name without its last letter when it has 4 or more, so a grammatical ending in the
+--- sender still matches ("Орда" in "Аукционный дом Орды"); short names (Korean, Chinese) stay whole.
+---@param name string|nil e.g. "Horde", "Allianz", "部落"
+---@return string|nil
+local function stem(name)
+  if type(name) ~= "string" or name == "" then return nil end
+  local chars = {}
+  for ch in name:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+    chars[#chars + 1] = ch
+  end
+  if #chars < 4 then return name end
+  return table.concat(chars, "", 1, #chars - 1)
+end
+
+--- The house of an auction house mail, from its sender. Works in every client language: the sender
+--- is the house's name ("Alliance Auction House", "Auktionshaus der Allianz", "얼라이언스 경매장"),
+--- which holds the faction's name in the client's language (FACTION_ALLIANCE, FACTION_HORDE); an
+--- auction mail naming neither faction is Blackwater's.
 ---@param sender string|nil e.g. "Alliance Auction House"
+---@param isAuction boolean|nil true when the mail is known to come from an auction house (it has an
+---  invoice); otherwise only English auction house senders count
 ---@return string|nil side "A", "H" or "N"; nil for other mail
-function GW.MailHouse(sender)
-  if type(sender) ~= "string" or not sender:find("Auction House") then return nil end
-  if sender:find("Alliance") then return "A" end
-  if sender:find("Horde") then return "H" end
-  if sender:find("Blackwater") or sender:find("Neutral") then return "N" end
-  return nil
+function GW.MailHouse(sender, isAuction)
+  if type(sender) ~= "string" or sender == "" then return nil end
+  if not isAuction and not sender:find("Auction House", 1, true) then return nil end
+  if sender:find("Blackwater", 1, true) or sender:find("Neutral", 1, true) then return "N" end
+  local names = { A = { "Alliance", FACTION_ALLIANCE }, H = { "Horde", FACTION_HORDE } }
+  for _, side in ipairs({ "A", "H" }) do
+    for _, name in ipairs(names[side]) do
+      local s = stem(name)
+      if s and sender:find(s, 1, true) then return side end
+    end
+  end
+  return "N"
 end
 
 --- The cut rate that best explains a house's sales: the 0.5% step whose rounded-down cuts match the
@@ -89,7 +116,7 @@ function GW.LearnFromMail()
     local invoiceType, itemName, _, bid, _, deposit, cut = GetInboxInvoiceInfo(i)
     if invoiceType == "seller" and (bid or 0) >= GW.CUT_MIN_SALE and cut then
       local _, _, sender, subject = GetInboxHeaderInfo(i)
-      local side = GW.MailHouse(sender)
+      local side = GW.MailHouse(sender, true) -- a seller invoice: it is auction house mail
       -- One key per sale (the money in the mail drops to 0 once taken, so it is left out).
       local key = table.concat({ tostring(sender), tostring(subject), tostring(itemName), bid, cut, deposit or 0 }, "|")
       if side and not d.seen[key] then
@@ -123,7 +150,7 @@ function GW.CutText()
       "%s %s%% (%s)",
       GW.HOUSE_NAMES[side],
       pct == math.floor(pct) and string.format("%d", pct) or string.format("%.1f", pct),
-      n > 0 and (n .. (n == 1 and " sale" or " sales")) or "assumed"
+      n > 0 and GW.Plural(n, "%d sale", "%d sales") or L["assumed"]
     )
   end
   return table.concat(parts, " · ")

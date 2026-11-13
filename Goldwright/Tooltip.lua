@@ -3,6 +3,7 @@
 --- the expand key (Shift by default) adds the rest. Reads only our own stored data and the client's
 --- item cache: never asks the server for anything.
 local _, GW = ...
+local L = GW.L
 
 local GREY = { 0.80, 0.80, 0.82 }
 local WHITE = { 1, 1, 1 }
@@ -241,9 +242,9 @@ end
 local function heldCount(tt, id)
   local owner = tt.GetOwner and tt:GetOwner()
   local n = owner and type(owner.count) == "number" and owner.count or 0
-  if n > 1 then return n, "Stack of " .. count(n) end
+  if n > 1 then return n, string.format(L["Stack of %s"], count(n)) end
   local inBags = C_Item and C_Item.GetItemCount and C_Item.GetItemCount(id) or (GetItemCount and GetItemCount(id)) or 0
-  if inBags > 1 then return inBags, count(inBags) .. " in your bags" end
+  if inBags > 1 then return inBags, string.format(L["%s in your bags"], count(inBags)) end
   return 0
 end
 
@@ -255,13 +256,18 @@ local function packFooter(h)
   if not pack then
     local s = GW.packStatus
     if s == "disabled" then
-      return "The Goldwright data pack for " .. h.region .. " is disabled: enable it in the AddOns list"
+      return string.format(L["The Goldwright data pack for %s is disabled: enable it in the AddOns list"], h.region)
     end
-    if s == "schema" then return "Your Goldwright data pack doesn't match this version: update both" end
-    return "No Goldwright data pack for " .. h.region .. ": install it from CurseForge"
+    if s == "schema" then return L["Your Goldwright data pack doesn't match this version: update both"] end
+    return string.format(L["No Goldwright data pack for %s: install it from CurseForge"], h.region)
   end
   if pack.snapshotAt and GetServerTime() - pack.snapshotAt > GW.STALE_DAYS * 86400 then
-    return "Price data is " .. GW.Age(pack.snapshotAt):gsub(" ago", "") .. " old: update the Goldwright data pack"
+    local days = math.floor((GetServerTime() - pack.snapshotAt) / 86400)
+    return GW.Plural(
+      days,
+      "Price data is %d day old: update the Goldwright data pack",
+      "Price data is %d days old: update the Goldwright data pack"
+    )
   end
   return nil
 end
@@ -271,7 +277,7 @@ end
 ---@param m GoldwrightTooltipModel|nil
 local function header(tt, m)
   tt:AddLine(" ")
-  local label = m and m.anySuffix and "Goldwright |cff9a9aa2(any suffix)|r" or "Goldwright"
+  local label = m and m.anySuffix and ("Goldwright |cff9a9aa2" .. L["(any suffix)"] .. "|r") or "Goldwright"
   tt:AddLine(label, GW.GOLD[1], GW.GOLD[2], GW.GOLD[3])
 end
 
@@ -288,8 +294,8 @@ local function signal(here, normal)
   if not (normal and normal > 0 and here.mv and here.min) then return nil end
   local pct = math.floor((here.min / normal - 1) * 100 + 0.5)
   local band = GW.Opt("signalPct")
-  if pct <= -band then return string.format("%d%% below normal: good time to buy", -pct), GW.SIGNAL_BLUE end
-  if pct >= band then return string.format("%d%% above normal: good time to sell", pct), GW.SIGNAL_ORANGE end
+  if pct <= -band then return string.format(L["%d%% below normal: good time to buy"], -pct), GW.SIGNAL_BLUE end
+  if pct >= band then return string.format(L["%d%% above normal: good time to sell"], pct), GW.SIGNAL_ORANGE end
   return nil
 end
 
@@ -301,13 +307,13 @@ local function trend(here)
   local parts = {}
   if here.avg7 and here.avg30 and here.avg30 > 0 then
     local t = math.floor((here.avg7 / here.avg30 - 1) * 100 + 0.5)
-    parts[1] = t == 0 and "7-day flat" or string.format("7-day %s%d%%", t > 0 and "+" or "-", math.abs(t))
+    parts[1] = t == 0 and L["7-day flat"] or string.format(L["7-day %s%d%%"], t > 0 and "+" or "-", math.abs(t))
   end
   local rate = GW.SellRateText(here)
   if rate then
     parts[#parts + 1] = rate
   elseif #parts > 0 then
-    parts[#parts + 1] = "sells n/a"
+    parts[#parts + 1] = L["sells n/a"]
   end
   return #parts > 0 and table.concat(parts, " · ") or nil
 end
@@ -327,7 +333,7 @@ local function tradeableLines(tt, m, h, expanded)
     local footer = packFooter(h)
     if O("ttNoData") or (footer and not GW.Pack()) then
       header(tt, m)
-      if O("ttNoData") then addLine(tt, "No auction data yet") end
+      if O("ttNoData") then addLine(tt, L["No auction data yet"]) end
       if footer then addLine(tt, footer, GW.SIGNAL_ORANGE, true) end
     end
     return
@@ -338,7 +344,7 @@ local function tradeableLines(tt, m, h, expanded)
 
   -- TT-2 market value; expanded: × the stack held
   if listed and O("ttMarket") then
-    addPair(tt, "Market value", GW.Money(here.mv))
+    addPair(tt, L["Market value"], GW.Money(here.mv))
     if expanded then
       local n, label = heldCount(tt, m.id)
       if n > 1 then addPair(tt, "  " .. label, GW.Money(here.mv * n), GREY) end
@@ -348,15 +354,15 @@ local function tradeableLines(tt, m, h, expanded)
   -- TT-3 now (cheapest real listing) with source and age; nothing listed: say so, with normal
   if listed then
     if O("ttNow") then
-      local src = here.source == "scan" and "your scan " or "server "
-      addPair(tt, "Now", GW.Money(here.min) .. "  |cff9a9aa2· " .. src .. GW.Age(here.at) .. "|r")
+      local src = here.source == "scan" and L["your scan"] or L["server"]
+      addPair(tt, L["Now"], GW.Money(here.min) .. "  |cff9a9aa2· " .. src .. " " .. GW.Age(here.at) .. "|r")
       if expanded and here.baitUnits > 0 then
         addLine(
           tt,
-          string.format(
-            "%d bait listing%s at %s ignored",
+          GW.Plural(
             here.baitUnits,
-            here.baitUnits == 1 and "" or "s",
+            "%d bait listing at %s ignored",
+            "%d bait listings at %s ignored",
             GW.Money(here.baitPrice)
           ),
           GW.SIGNAL_ORANGE
@@ -364,8 +370,8 @@ local function tradeableLines(tt, m, h, expanded)
       end
     end
   else
-    local right = "none listed now"
-    if normal and O("ttNormal") then right = right .. " · normal " .. GW.Money(normal) end
+    local right = L["none listed now"]
+    if normal and O("ttNormal") then right = right .. " · " .. string.format(L["normal %s"], GW.Money(normal)) end
     addPair(tt, GW.HOUSE_NAMES[h.side], right, GREY)
   end
 
@@ -376,14 +382,19 @@ local function tradeableLines(tt, m, h, expanded)
       sig, sigColor = signal(here, normal)
     end
     if expanded and listed and normal and O("ttNormal") then
-      addPair(tt, here.avg7 and "Normal (7 days)" or "Normal (30 days)", GW.Money(normal))
+      addPair(tt, here.avg7 and L["Normal (7 days)"] or L["Normal (30 days)"], GW.Money(normal))
     end
     if sig then addLine(tt, sig, sigColor) end
     local tr = O("ttTrend") and trend(here)
     if tr and (expanded or not sig) then addLine(tt, tr) end
   end
   if expanded then
-    addPair(tt, "30-day low / high", m.lo and (GW.Money(m.lo) .. " / " .. GW.Money(m.hi)) or "building history", GREY)
+    addPair(
+      tt,
+      L["30-day low / high"],
+      m.lo and (GW.Money(m.lo) .. " / " .. GW.Money(m.hi)) or L["building history"],
+      GREY
+    )
   end
 
   -- TT-6 other houses; when another house really pays more (>= 20% net, real depth, proven
@@ -392,7 +403,7 @@ local function tradeableLines(tt, m, h, expanded)
   if gain then
     addLine(
       tt,
-      string.format("Blackwater nets ~%d%% more after its 15%% cut (%s)", gain, GW.SoldText(data.N.boughtPerDay)),
+      string.format(L["Blackwater nets ~%d%% more after its 15%% cut (%s)"], gain, GW.SoldText(data.N.boughtPerDay)),
       GW.SIGNAL_BLUE
     )
   elseif O("ttOthers") and not expanded then
@@ -402,7 +413,7 @@ local function tradeableLines(tt, m, h, expanded)
         others[#others + 1] = GW.HOUSE_NAMES[side] .. " " .. GW.Money(data[side].mv)
       end
     end
-    if #others > 0 then addPair(tt, "Other houses", table.concat(others, " · ")) end
+    if #others > 0 then addPair(tt, L["Other houses"], table.concat(others, " · ")) end
   end
 
   if expanded then
@@ -410,13 +421,13 @@ local function tradeableLines(tt, m, h, expanded)
     local vendor = m.info and m.info.vendor or 0
     if listed and vendor > 0 and O("ttVendor") then
       if GW.Net(h.side, here.mv) <= vendor then
-        addLine(tt, "Vendor pays " .. GW.Money(vendor) .. ": more than the auction house", GW.SIGNAL_ORANGE)
+        addLine(tt, string.format(L["Vendor pays %s: more than the auction house"], GW.Money(vendor)), GW.SIGNAL_ORANGE)
       end
       if here.min and here.min < vendor then
         addLine(
           tt,
           string.format(
-            "Deal: buy below %s and sell to a vendor (+%s each)",
+            L["Deal: buy below %s and sell to a vendor (+%s each)"],
             GW.Money(vendor),
             GW.Money(vendor - here.min)
           ),
@@ -428,9 +439,9 @@ local function tradeableLines(tt, m, h, expanded)
     for _, side in ipairs(SIDES) do
       local d = data[side]
       if d then
-        local right = d.mv and string.format("%s  ·  %s listed", GW.Money(d.mv), count(d.units))
-          or ("none listed" .. (d.avg7 and (" · normal " .. GW.Money(d.avg7)) or ""))
-        addPair(tt, "  " .. GW.HOUSE_NAMES[side] .. (side == h.side and " (here)" or ""), right, GREY)
+        local right = d.mv and string.format(L["%s  ·  %s listed"], GW.Money(d.mv), count(d.units))
+          or (L["none listed"] .. (d.avg7 and (" · " .. string.format(L["normal %s"], GW.Money(d.avg7))) or ""))
+        addPair(tt, "  " .. GW.HOUSE_NAMES[side] .. (side == h.side and (" " .. L["(here)"]) or ""), right, GREY)
       end
     end
   end
@@ -453,7 +464,7 @@ local function addTooltipLines(tt, link, itemID, tipData)
   if notTradeable(tt, tipData, m) then
     local vendor = m.info and m.info.vendor or 0
     if vendor > 0 and GW.Opt("ttVendor") then
-      addPair(tt, "Goldwright: vendor pays", GW.Money(vendor) .. " each", GREY)
+      addPair(tt, L["Goldwright: vendor pays"], string.format(L["%s each"], GW.Money(vendor)), GREY)
     end
     return
   end

@@ -37,12 +37,14 @@
 ---@field craftPanel table|nil the Crafting panel beside the profession window (CraftPanel.lua)
 local ADDON_NAME, GW = ...
 _G.Goldwright = GW
+local L = GW.L -- translations (Localization.lua)
 
 GW.SIGNAL_BLUE = { 0.56, 0.69, 1.0 } -- good buy / pays more
 GW.SIGNAL_ORANGE = { 0.96, 0.62, 0.29 } -- caution
 GW.GOLD = { 0.88, 0.67, 0.23 } -- brand mark
 GW.CUT = { A = 0.05, H = 0.05, N = 0.15 } -- auction house cut, assumed; AuctionMail.lua replaces it with the rate measured from sale invoices
-GW.HOUSE_NAMES = { A = "Alliance", H = "Horde", N = "Blackwater" }
+-- The faction names are the game's own, in the client's language.
+GW.HOUSE_NAMES = { A = FACTION_ALLIANCE or "Alliance", H = FACTION_HORDE or "Horde", N = L["Blackwater"] }
 -- Seconds a confirm step (a quoted buy, the auction house's price warning) waits before the same
 -- button accepts it, so a double click or a held key can't go straight through it.
 GW.CONFIRM_DELAY = 0.8
@@ -156,6 +158,9 @@ local COINS = {
   c = "|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:1:0|t",
 }
 
+-- The game's own coin letters in the client's language (German "g s k"), else English.
+local SYMBOLS = { g = GOLD_AMOUNT_SYMBOL or "g", s = SILVER_AMOUNT_SYMBOL or "s", c = COPPER_AMOUNT_SYMBOL or "c" }
+
 --- Formats copper as "1g 23s 47c" (or with coin icons, per the `money` setting), dropping zero units.
 ---@param copper number|nil amount in copper (rounded; nil = 0)
 ---@return string text
@@ -163,7 +168,7 @@ function GW.Money(copper)
   copper = math.floor((copper or 0) + 0.5)
   local g, s, c = math.floor(copper / 10000), math.floor((copper % 10000) / 100), copper % 100
   local icons = GW.Opt("money") == "coins"
-  local function unit(n, u) return n .. (icons and COINS[u] or u) end
+  local function unit(n, u) return n .. (icons and COINS[u] or SYMBOLS[u]) end
   local parts = {}
   if g > 0 then parts[#parts + 1] = unit(g >= 1000 and BreakUpLargeNumbers and BreakUpLargeNumbers(g) or g, "g") end
   if s > 0 then parts[#parts + 1] = unit(s, "s") end
@@ -175,6 +180,18 @@ end
 ---@param n number
 ---@return string text
 function GW.Number(n) return BreakUpLargeNumbers and BreakUpLargeNumbers(n) or tostring(n) end
+
+--- Formats a number with one decimal and the client's decimal mark ("4.2", German "4,2"; the game's
+--- DECIMAL_SEPERATOR, spelled that way by Blizzard).
+---@param n number
+---@param places number|nil decimals (default 1)
+---@return string text
+function GW.Decimal(n, places)
+  local s = string.format("%." .. (places or 1) .. "f", n)
+  local mark = DECIMAL_SEPERATOR
+  if type(mark) == "string" and mark ~= "" and mark ~= "." then s = s:gsub("%.", mark, 1) end
+  return s
+end
 
 ---------------------------------------------------------------------------
 -- Search throttle (shared by Sell and Cancel): the server allows about 100 searches a minute.
@@ -226,10 +243,14 @@ GW.SEARCH_RETRY = 2
 function GW.PriceSorts() return { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } } end
 
 --- The waiting text shown while a search is blocked.
+---@param capital boolean|nil starts a line: "Waiting for…" instead of "waiting for…"
 ---@return string text
-function GW.WaitText()
-  return GW.SearchBlocked() == "limit" and "waiting for a search slot (100 a minute)…"
-    or "waiting for the auction house…"
+function GW.WaitText(capital)
+  local limit = GW.SearchBlocked() == "limit"
+  if capital then
+    return limit and L["Waiting for a search slot (100 a minute)…"] or L["Waiting for the auction house…"]
+  end
+  return limit and L["waiting for a search slot (100 a minute)…"] or L["waiting for the auction house…"]
 end
 
 --- Appends a line to the debug log of auction house traffic in SavedVariables (read with
@@ -240,7 +261,7 @@ function GW.Log(msg, ...)
   if not GoldwrightDB then return end
   GoldwrightDB.searchLog = GoldwrightDB.searchLog or {}
   local log = GoldwrightDB.searchLog
-  log[#log + 1] = string.format("%s %s", date("%H:%M:%S"), string.format(msg, ...))
+  log[#log + 1] = string.format("%s %s", date("%m-%d %H:%M:%S"), string.format(msg, ...))
   while #log > 80 do
     table.remove(log, 1)
   end
@@ -250,12 +271,12 @@ end
 ---@param epoch number|nil server time in seconds (nil or 0 = unknown)
 ---@return string text
 function GW.Age(epoch)
-  if not epoch or epoch == 0 then return "unknown" end
+  if not epoch or epoch == 0 then return L["unknown"] end
   local d = GetServerTime() - epoch
-  if d < 90 then return "just now" end
-  if d < 3600 then return math.floor(d / 60) .. " min ago" end
-  if d < 172800 then return math.floor(d / 3600) .. " h ago" end
-  return math.floor(d / 86400) .. " days ago"
+  if d < 90 then return L["just now"] end
+  if d < 3600 then return string.format(L["%d min ago"], math.floor(d / 60)) end
+  if d < 172800 then return string.format(L["%d h ago"], math.floor(d / 3600)) end
+  return GW.Plural(math.floor(d / 86400), "%d day ago", "%d days ago")
 end
 
 --- The player's auction house, as GW.DetectHouse returns it.
@@ -493,8 +514,8 @@ end
 ---@return string text "" without a number
 function GW.SoldText(perDay)
   if not perDay then return "" end
-  return perDay >= 10 and string.format("~%d sold/day", math.floor(perDay + 0.5))
-    or string.format("~%.1f sold/day", perDay)
+  local num = perDay >= 10 and GW.Number(math.floor(perDay + 0.5)) or GW.Decimal(perDay)
+  return string.format(L["~%s sold/day"], num)
 end
 
 --- Sales per day to show for one house: proven sales (partial buys and sweeps) when there are any,
@@ -515,8 +536,8 @@ end
 function GW.SellRateText(here)
   local n, proven = GW.SellRate(here)
   if not n then return nil end
-  local num = n >= 10 and GW.Number(math.floor(n + 0.5)) or string.format("%.1f", n)
-  return proven and string.format("sold ~%s/day", num) or string.format("sells ~%s/day (est.)", num)
+  local num = n >= 10 and GW.Number(math.floor(n + 0.5)) or GW.Decimal(n)
+  return string.format(proven and L["sold ~%s/day"] or L["sells ~%s/day (est.)"], num)
 end
 
 --- Net per unit after the house's cut.
@@ -530,24 +551,26 @@ function GW.PrintPackProblem()
   local h = GW.House()
   local want = "Goldwright Data: " .. h.region
   if GW.packStatus == "schema" then
-    GW.Print("Your Goldwright data pack doesn't match this version of Goldwright. Update both in your add-on manager.")
+    GW.Print(
+      L["Your Goldwright data pack doesn't match this version of Goldwright. Update both in your add-on manager."]
+    )
   elseif GW.packStatus == "disabled" then
     GW.Print(
-      "The data pack for %s %s is installed but disabled. Enable GoldwrightData_%s in the AddOns list.",
+      L["The data pack for %s %s is installed but disabled. Enable GoldwrightData_%s in the AddOns list."],
       h.region,
       h.ruleset,
       h.packKey
     )
   elseif #(GW.otherPacks or {}) > 0 then
     GW.Print(
-      "No data for %s %s: you have %s installed. Install %s for prices in tooltips.",
+      L["No data for %s %s: you have %s installed. Install %s for prices in tooltips."],
       h.region,
       h.ruleset,
       table.concat(GW.otherPacks, ", "),
       want
     )
   else
-    GW.Print("No data pack for %s %s. Install %s for prices in tooltips.", h.region, h.ruleset, want)
+    GW.Print(L["No data pack for %s %s. Install %s for prices in tooltips."], h.region, h.ruleset, want)
   end
 end
 
@@ -556,15 +579,22 @@ end
 function GW.PrintStaleNotice()
   local days = GW.PackAgeDays()
   if days and days > GW.STALE_DAYS then
-    GW.Print("Your price data is %d days old. Update Goldwright Data in your add-on manager.", math.floor(days))
+    GW.Print(
+      "%s",
+      GW.Plural(
+        math.floor(days),
+        "Your price data is %d day old. Update Goldwright Data in your add-on manager.",
+        "Your price data is %d days old. Update Goldwright Data in your add-on manager."
+      )
+    )
   end
 end
 
 -- Bindings.xml labels (Options > Keybindings > AddOns)
 BINDING_HEADER_GOLDWRIGHT = "Goldwright"
-BINDING_NAME_GOLDWRIGHT_POST = "Post the selected item"
-BINDING_NAME_GOLDWRIGHT_CANCEL_NEXT = "Cancel the next undercut auction"
-BINDING_NAME_GOLDWRIGHT_TOGGLE = "Open or close Goldwright"
+BINDING_NAME_GOLDWRIGHT_POST = L["Post the selected item"]
+BINDING_NAME_GOLDWRIGHT_CANCEL_NEXT = L["Cancel the next undercut auction"]
+BINDING_NAME_GOLDWRIGHT_TOGGLE = L["Open or close Goldwright"]
 
 GW.loginHandlers = {}
 
@@ -595,7 +625,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
     end
     for _, fn in ipairs(GW.loginHandlers) do
       local ok, err = pcall(fn)
-      if not ok then GW.Print("startup error: %s", tostring(err)) end
+      if not ok then GW.Print(L["startup error: %s"], tostring(err)) end
     end
   end
 end)
@@ -609,16 +639,18 @@ function GW.PriceLine(msg)
   local h = GW.House()
   local d = GW.ItemData(id)
   local here = d and d[h.side]
-  local name = msg:match("%[(.-)%]") or ("item " .. id)
-  if not here then return string.format("%s: no auction data yet.", name) end
+  local name = msg:match("%[(.-)%]") or string.format(L["item %s"], id)
+  if not here then return string.format(L["%s: no auction data yet."], name) end
   local parts = {}
   if here.mv then
-    parts[#parts + 1] = "market " .. GW.Money(here.mv)
-    if here.min then parts[#parts + 1] = "now " .. GW.Money(here.min) end
+    parts[#parts + 1] = string.format(L["market %s"], GW.Money(here.mv))
+    if here.min then parts[#parts + 1] = string.format(L["now %s"], GW.Money(here.min)) end
   else
-    parts[#parts + 1] = "none listed now"
+    parts[#parts + 1] = L["none listed now"]
   end
-  if here.avg7 or here.avg30 then parts[#parts + 1] = "normal " .. GW.Money(here.avg7 or here.avg30) end
+  if here.avg7 or here.avg30 then
+    parts[#parts + 1] = string.format(L["normal %s"], GW.Money(here.avg7 or here.avg30))
+  end
   local rate = GW.SellRateText(here)
   if rate then parts[#parts + 1] = rate end
   for _, side in ipairs({ "A", "H", "N" }) do
@@ -643,10 +675,10 @@ SlashCmdList.GOLDWRIGHT = function(raw)
   local h = GW.House()
   if cmd == "status" or cmd == "" then
     local pack = GW.Pack()
-    GW.Print('%s · %s · %s (realm "%s").', h.region, h.ruleset, GW.HOUSE_NAMES[h.side], h.realm)
+    GW.Print(L['%s · %s · %s (realm "%s").'], h.region, h.ruleset, GW.HOUSE_NAMES[h.side], h.realm)
     if pack then
       GW.Print(
-        "Data pack %s %s: snapshot %s, built %s.",
+        L["Data pack %s %s: snapshot %s, built %s."],
         h.packKey,
         pack.version or "?",
         GW.Age(pack.snapshotAt),
@@ -656,13 +688,13 @@ SlashCmdList.GOLDWRIGHT = function(raw)
     else
       GW.PrintPackProblem()
     end
-    GW.Print("Searches this minute: %d / %d.", GW.SearchesThisMinute(), GW.SEARCH_LIMIT)
-    if GW.CutText then GW.Print("Auction house cut: %s.", GW.CutText()) end
-    if cmd == "" then GW.Print("Commands: %s", HELP) end
+    GW.Print(L["Searches this minute: %d / %d."], GW.SearchesThisMinute(), GW.SEARCH_LIMIT)
+    if GW.CutText then GW.Print(L["Auction house cut: %s."], GW.CutText()) end
+    if cmd == "" then GW.Print(L["Commands: %s"], HELP) end
   elseif cmd == "bug" or cmd == "bugreport" or cmd == "report" then
     if GW.ShowBugReport then GW.ShowBugReport() end
   elseif cmd == "price" then
-    GW.Print("%s", GW.PriceLine(rest) or "Usage: /gw price [item link]")
+    GW.Print("%s", GW.PriceLine(rest) or L["Usage: /gw price [item link]"])
   elseif cmd == "sell" or cmd == "cancel" or cmd == "auctions" then
     if GW.OpenTab then GW.OpenTab(cmd == "sell" and "sell" or "cancel") end
   elseif cmd == "lists" or cmd == "shopping" then
@@ -671,13 +703,13 @@ SlashCmdList.GOLDWRIGHT = function(raw)
     if not GW.AddToList then return end
     local e, info = GW.AddToList(rest)
     if e then
-      GW.Print("Added %s to %s.", e.name, info.name)
+      GW.Print(L["Added %s to %s."], e.name, info.name)
     else
-      GW.Print("%s", info or "Usage: /gw add [item link or name]")
+      GW.Print("%s", info or L["Usage: /gw add [item link or name]"])
     end
   elseif (cmd == "craft" or cmd == "crafting") and rest == "reset" then
     if GW.ResetCraftPosition then GW.ResetCraftPosition() end
-    GW.Print("The Crafting panel opens next to the profession window again.")
+    GW.Print(L["The Crafting panel opens next to the profession window again."])
   elseif cmd == "craft" or cmd == "crafting" then
     if GW.ToggleCraftPanel then GW.ToggleCraftPanel() end
   elseif cmd == "scan" then
@@ -691,9 +723,12 @@ SlashCmdList.GOLDWRIGHT = function(raw)
     if GW.ShowWelcome then GW.ShowWelcome() end
   elseif cmd == "autoshow" then
     GW.SetOpt("autoShow", not GW.Opt("autoShow"))
-    GW.Print("Open Goldwright with the auction house: %s", GW.Opt("autoShow") and "on" or "off")
+    GW.Print(
+      GW.Opt("autoShow") and L["Open Goldwright with the auction house: on"]
+        or L["Open Goldwright with the auction house: off"]
+    )
   else
-    GW.Print("Commands: %s", HELP)
+    GW.Print(L["Commands: %s"], HELP)
   end
 end
 
@@ -728,6 +763,6 @@ blocked:SetScript("OnEvent", function(_, event, addon, fn)
   GW.Log("%s: %s", event, tostring(fn))
   if not GW.blockedShown then
     GW.blockedShown = true
-    GW.Print("the game blocked %s (%s). Please report this.", tostring(fn), event)
+    GW.Print(L["the game blocked %s (%s). Please report this."], tostring(fn), event)
   end
 end)

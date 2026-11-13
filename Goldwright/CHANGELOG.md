@@ -1,13 +1,12 @@
 # Goldwright changelog
 
-## 0.2.2
+## 0.3.0
 
-Safer buying and selling.
+Goldwright speaks your language.
 
-- **Shopping lists:** once you click Confirm, Goldwright waits for the auction house's answer, even if you close the tab (it tells you in chat). If no answer comes, it says to check your mailbox before buying again, instead of "Nothing was bought".
-- **Shopping lists:** shared lists show the game's own name for each item, so a list can't show one item and buy another. Very large or broken lists are refused instead of freezing the game.
-- **Shopping lists:** Confirm works a moment after the price appears, so a double click can't buy before you've read it. A price higher than the list showed is shown in orange.
-- **Sell:** a price you type stays, even when new listings arrive. Post waits for live prices before posting at the suggested price, and the auction house's "check this price" warning can't be clicked through by a double click.
-- **My Auctions:** after a cancel, the auction that moves up can't be cancelled by a quick second click on the same spot.
-- **My Auctions:** recipes and other items the game hadn't loaded yet showed no name; they do now.
-- The welcome window is as solid as the other windows, and Goldwright's description in the AddOns list is up to date.
+- **Translated:** Goldwright now shows in your game's language: German, French, Spanish (Spain and Latin America), Italian, Portuguese (Brazil), Russian, Korean and Chinese (Simplified and Traditional). These are first translations; if a word sounds wrong in your language, tell us in the Discord and we'll fix it.
+- **Prices in your language:** amounts use your game's own coin letters, and you can type prices with them too (for example `1g 50s 20k` in German), as well as with g, s and c.
+- **Blackwater and the real cut on every client:** Goldwright recognises Blackwater's auction house and learns the auction house cut from your sale mail in every language, not only in English.
+- **Better bug reports:** Goldwright now keeps a record of auction house errors (like "Internal auction error") with what was sent just before and whether Goldwright or the game sent it, and of any Goldwright error. `/gw bug` includes the most recent ones and your game's language, so we can tell quickly whether a problem is ours.
+- **Sell:** when the auction house refuses a post, the message says why (for example "Not enough money").
+- Small fixes: "1 sellable item" and "1 search this minute" no longer say "items" and "searches".

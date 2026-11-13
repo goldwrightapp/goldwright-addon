@@ -3,6 +3,7 @@
 --- edit boxes), not the newer settings widgets. Every change applies at once (GW.SetOpt ->
 --- GW.ApplyOptions), without /reload.
 local _, GW = ...
+local L = GW.L
 
 local frame = CreateFrame("Frame", "GoldwrightSettingsFrame")
 frame.name = "Goldwright"
@@ -176,12 +177,12 @@ end
 -- the page
 ---------------------------------------------------------------------------
 StaticPopupDialogs.GOLDWRIGHT_RESET = {
-  text = "Reset all Goldwright settings to their defaults?\nYour hidden items and remembered durations stay.",
+  text = L["Reset all Goldwright settings to their defaults?\nYour hidden items and remembered durations stay."],
   button1 = YES or "Yes",
   button2 = NO or "No",
   OnAccept = function()
     GW.ResetOptions()
-    GW.Print("Settings reset to defaults.")
+    GW.Print(L["Settings reset to defaults."])
   end,
   timeout = 0,
   whileDead = true,
@@ -211,67 +212,68 @@ local function build()
   title:SetText("Goldwright")
   local tag = fs(content, "GameFontHighlightSmall", "LEFT")
   tag:SetPoint("LEFT", title, "RIGHT", 10, 0)
-  tag:SetText("Auction house prices for WoW Forever")
+  tag:SetText(L["Auction house prices for WoW Forever"])
   Y = Y - 24
 
-  heading("Tooltip")
-  check("Market value", "ttMarket", "Depth-based market value at your auction house.")
-  check("Now (cheapest real listing)", "ttNow", "The cheapest listing after skipping likely bait.")
+  heading(L["Tooltip"])
+  check(L["Market value"], "ttMarket", L["Depth-based market value at your auction house."])
+  check(L["Now (cheapest real listing)"], "ttNow", L["The cheapest listing after skipping likely bait."])
   check(
-    "Normal price and buy / sell signal",
+    L["Normal price and buy / sell signal"],
     "ttNormal",
-    "The 7-day normal price, and a line when the cheapest listing is well above or below it."
+    L["The 7-day normal price, and a line when the cheapest listing is well above or below it."]
   )
   check(
-    "Trend and sell rate",
+    L["Trend and sell rate"],
     "ttTrend",
-    "7-day trend against 30 days, and units sold per day (proven sales, else an estimate)."
+    L["7-day trend against 30 days, and units sold per day (proven sales, else an estimate)."]
   )
-  check("Other houses", "ttOthers")
-  check("Blackwater pays more", "ttBetter", "Only shown with real depth and proven buyers at the other house.")
-  check("Vendor comparison", "ttVendor")
-  check('"No auction data yet" for unknown items', "ttNoData")
+  check(L["Other houses"], "ttOthers")
+  check(L["Blackwater pays more"], "ttBetter", L["Only shown with real depth and proven buyers at the other house."])
+  check(L["Vendor comparison"], "ttVendor")
+  check(string.format(L['"%s" for unknown items'], L["No auction data yet"]), "ttNoData")
   choice(
-    "Expanded view key",
+    L["Expanded view key"],
     "expandKey",
-    { { "SHIFT", "Shift" }, { "CTRL", "Ctrl" }, { "ALT", "Alt" }, { "NONE", "None" } }
+    { { "SHIFT", L["Shift"] }, { "CTRL", L["Ctrl"] }, { "ALT", L["Alt"] }, { "NONE", L["None"] } }
   )
-  choice("Money", "money", { { "coins", "Coin Icons" }, { "letters", "1g 23s 47c" } })
+  choice(L["Money"], "money", { { "coins", L["Coin Icons"] }, { "letters", L["1g 23s 47c"] } })
 
-  heading("Signals")
-  number("Tooltip signal outside", "signalPct", 1, 90, "% of normal", "default 15")
-  number("Better-house hint from", "betterPct", 1, 500, "% more, after cuts", "default 20")
+  heading(L["Signals"])
+  number(L["Tooltip signal outside"], "signalPct", 1, 90, L["% of normal"], string.format(L["default %d"], 15))
+  number(L["Better-house hint from"], "betterPct", 1, 500, L["% more, after cuts"], string.format(L["default %d"], 20))
 
-  heading("Selling")
-  choice("Undercut by", "undercut", { { "1c", "1 Copper" }, { "match", "Match" }, { "pct", "Percent" } })
-  number("Percent under", "undercutPct", 1, 50, "%", "used with Percent")
-  number("Warn when below", "belowPct", 1, 99, "% of normal", "default 70")
-  number("Note when above", "abovePct", 101, 999, "% of normal", "default 150")
-  choice("Default duration", "duration", { { 3, "24 Hours" }, { 2, "8 Hours" }, { 1, "2 Hours" } })
-  check("Open Goldwright with the auction house", "autoShow")
+  heading(L["Selling"])
+  choice(L["Undercut by"], "undercut", { { "1c", L["1 Copper"] }, { "match", L["Match"] }, { "pct", L["Percent"] } })
+  number(L["Percent under"], "undercutPct", 1, 50, L["%"], L["used with Percent"])
+  number(L["Warn when below"], "belowPct", 1, 99, L["% of normal"], string.format(L["default %d"], 70))
+  number(L["Note when above"], "abovePct", 101, 999, L["% of normal"], string.format(L["default %d"], 150))
+  choice(L["Default duration"], "duration", { { 3, L["24 Hours"] }, { 2, L["8 Hours"] }, { 1, L["2 Hours"] } })
+  check(L["Open Goldwright with the auction house"], "autoShow")
   note(
-    "Key bindings for Post, Cancel next undercut and opening Goldwright: Options › Keybindings › AddOns › Goldwright.",
+    L["Key bindings for Post, Cancel next undercut and opening Goldwright: Options › Keybindings › AddOns › Goldwright."],
     20
   )
 
-  heading("Bait detection")
+  heading(L["Bait detection"])
   check(
-    "Skip thin cheap listings when pricing",
+    L["Skip thin cheap listings when pricing"],
     "bait",
-    "Sellers price against the first real listing; buyers see bait as a deal."
+    L["Sellers price against the first real listing; buyers see bait as a deal."]
   )
-  number("Thin = at most", "baitShare", 1, 20, "% of units listed", "default 1")
-  number("...and more than", "baitGap", 5, 90, "% below the 5% depth price", "default 30")
-  note("Applies to live listings in game. Data pack prices use the server's fixed rule (1%, 30%).", 20)
+  number(L["Thin = at most"], "baitShare", 1, 20, L["% of units listed"], string.format(L["default %d"], 1))
+  number(L["...and more than"], "baitGap", 5, 90, L["% below the 5% depth price"], string.format(L["default %d"], 30))
+  note(L["Applies to live listings in game. Data pack prices use the server's fixed rule (1%, 30%)."], 20)
 
-  heading("Launcher")
-  local mm = check("Minimap button", "minimap", "Also in the add-on menu next to the minimap, when the game has one.")
+  heading(L["Launcher"])
+  local mm =
+    check(L["Minimap button"], "minimap", L["Also in the add-on menu next to the minimap, when the game has one."])
   mm:SetScript("OnClick", function(self)
     if GW.SetMinimapShown then GW.SetMinimapShown(self:GetChecked() and true or false) end
   end)
   table.insert(controls, function() mm:SetChecked(GW.MinimapShown and GW.MinimapShown() or false) end)
 
-  heading("Data")
+  heading(L["Data"])
   local house = fs(content, "GameFontHighlight", "LEFT")
   house:SetPoint("TOPLEFT", 20, Y)
   house:SetWidth(580)
@@ -283,31 +285,28 @@ local function build()
   table.insert(controls, function()
     local h = GW.House()
     local override = GoldwrightDB and GoldwrightDB.rulesetOverride
-    house:SetText(
-      string.format(
-        "%s · %s · %s  |cff9a9aa2(realm “%s”%s)|r",
-        h.region,
-        h.ruleset,
-        GW.HOUSE_NAMES[h.side],
-        h.realm,
-        override and ", ruleset set by you" or ""
-      )
-    )
+    local fmt = override and L["%s · %s · %s  |cff9a9aa2(realm “%s”, ruleset set by you)|r"]
+      or L["%s · %s · %s  |cff9a9aa2(realm “%s”)|r"]
+    house:SetText(string.format(fmt, h.region, h.ruleset, GW.HOUSE_NAMES[h.side], h.realm))
     local pack = GW.Pack()
     if pack then
       packLine:SetText(
-        string.format("Goldwright Data: %s %s · snapshot %s", h.packKey, pack.version or "", GW.Age(pack.snapshotAt))
+        string.format(
+          L["Goldwright Data: %s %s · snapshot %s"],
+          h.packKey,
+          pack.version or "",
+          GW.Age(pack.snapshotAt)
+        )
       )
       setColor(packLine, GREY)
     else
       packLine:SetText(
-        "No data pack loaded for "
-          .. h.region
-          .. " "
-          .. h.ruleset
-          .. ". Install Goldwright Data: "
-          .. h.region
-          .. " in your add-on manager."
+        string.format(
+          L["No data pack loaded for %s %s. Install Goldwright Data: %s in your add-on manager."],
+          h.region,
+          h.ruleset,
+          h.region
+        )
       )
       setColor(packLine, GW.SIGNAL_ORANGE)
     end
@@ -316,9 +315,14 @@ local function build()
   -- Ruleset override (if detection from the realm name is wrong): stored outside opt so it survives Reset.
   local l = fs(content, "GameFontHighlight", "LEFT")
   l:SetPoint("TOPLEFT", 20, Y - 4)
-  l:SetText("Ruleset")
-  local rules =
-    { { nil, "Detect" }, { "Normal", "Normal" }, { "PvP", "PvP" }, { "Roleplay", "RP" }, { "Roleplay PvP", "RP-PvP" } }
+  l:SetText(L["Ruleset"])
+  local rules = {
+    { nil, L["Detect"] },
+    { "Normal", L["Normal"] },
+    { "PvP", L["PvP"] },
+    { "Roleplay", L["RP"] },
+    { "Roleplay PvP", L["RP-PvP"] },
+  }
   local rb = {}
   local x = 220
   for _, o in ipairs(rules) do
@@ -332,7 +336,7 @@ local function build()
       local pack = GW.ReloadPack()
       local h = GW.house
       if pack then
-        GW.Print("Using the %s %s data pack.", h.region, h.ruleset)
+        GW.Print(L["Using the %s %s data pack."], h.region, h.ruleset)
       else
         GW.PrintPackProblem()
       end
@@ -352,23 +356,23 @@ local function build()
   end)
   Y = Y - 32
 
-  button("Forget My Scans", 20, 160, function()
+  button(L["Forget My Scans"], 20, 160, function()
     if GoldwrightDB then GoldwrightDB.searchLog = nil end
     GoldwrightScans = { lastDataAt = GoldwrightScans and GoldwrightScans.lastDataAt } -- the server's 15 minutes still apply
     GW.ResetCache()
     GW.ApplyOptions()
-    GW.Print("Your local search history is cleared.")
+    GW.Print(L["Your local search history is cleared."])
   end)
-  button("Show Welcome Again", 186, 180, function()
+  button(L["Show Welcome Again"], 186, 180, function()
     if GW.ShowWelcome then GW.ShowWelcome() end
   end)
-  button("Report a Bug", 372, 130, function()
+  button(L["Report a Bug"], 372, 130, function()
     if GW.ShowBugReport then GW.ShowBugReport() end
   end)
   Y = Y - 36
 
-  heading("Reset")
-  button("Reset All Settings", 20, 160, function() StaticPopup_Show("GOLDWRIGHT_RESET") end)
+  heading(L["Reset"])
+  button(L["Reset All Settings"], 20, 160, function() StaticPopup_Show("GOLDWRIGHT_RESET") end)
   Y = Y - 40
 
   content:SetHeight(-Y + 20)
@@ -394,7 +398,7 @@ end)
 --- Opens the Goldwright settings page (not in combat).
 function GW.OpenSettings()
   if InCombatLockdown and InCombatLockdown() then
-    GW.Print("Settings open after combat.")
+    GW.Print(L["Settings open after combat."])
     return
   end
   if category and Settings and Settings.OpenToCategory then
@@ -403,6 +407,6 @@ function GW.OpenSettings()
     InterfaceOptionsFrame_OpenToCategory(frame)
     InterfaceOptionsFrame_OpenToCategory(frame) -- the old panel needs two calls the first time
   else
-    GW.Print("Couldn't open the settings page; use /gw commands instead.")
+    GW.Print(L["Couldn't open the settings page; use /gw commands instead."])
   end
 end

@@ -3,6 +3,7 @@
 --- "Cancel next undercut" (button and key binding) and "Repost in Sell".
 --- Lives inside the Goldwright panel: SellPanel.lua switches tabs and forwards events here.
 local _, GW = ...
+local L = GW.L
 
 local ROWS, ROW_H = 12, 28
 local CHECK_TIMEOUT = 6 -- seconds to wait for one item's search
@@ -107,7 +108,7 @@ local function readOwned()
         -- to the next source, and to "item <id>" last; ITEM_KEY_ITEM_INFO_RECEIVED re-reads it.
         name = nonEmpty(a.itemLink and a.itemLink:match("%[(.-)%]")) or nonEmpty(info and info.itemName) or nonEmpty(
           C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(key.itemID)
-        ) or ("item " .. tostring(key.itemID)),
+        ) or string.format(L["item %s"], tostring(key.itemID)),
         icon = (info and info.iconFileID)
           or (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(key.itemID))
           or 134400,
@@ -177,11 +178,11 @@ end
 -- rendering
 ---------------------------------------------------------------------------
 local STATUS_TEXT = {
-  sold = { "Sold: money comes by mail", GREY },
-  bid = { "Bid only: not checked", GREY },
-  unknown = { "Unknown (no answer)", GREY },
-  checking = { "Checking…", GREY },
-  unchecked = { "Not checked yet", GREY },
+  sold = { L["Sold: money comes by mail"], GREY },
+  bid = { L["Bid only: not checked"], GREY },
+  unknown = { L["Unknown (no answer)"], GREY },
+  checking = { L["Checking…"], GREY },
+  unchecked = { L["Not checked yet"], GREY },
 }
 
 --- Redraws the rows, the progress line, the summary and the "Cancel Next Undercut" button.
@@ -204,14 +205,15 @@ local function render()
       row.icon:SetTexture(r.icon)
       row.name:SetText(r.name .. "  |cff9a9aa2×" .. r.qty .. "|r")
       setColor(row.name, qualityColor(r.quality))
-      row.price:SetText(r.unit and GW.Money(r.unit) or "bid")
+      row.price:SetText(r.unit and GW.Money(r.unit) or L["bid"])
       row.time:SetText(r.timeLeft)
       local text, color
       if r.status == "undercut" then
-        text, color = "Undercut · now " .. GW.Money(r.now), GW.SIGNAL_ORANGE
+        text, color = string.format(L["Undercut · now %s"], GW.Money(r.now)), GW.SIGNAL_ORANGE
       elseif r.status == "lowest" then
         text, color =
-          r.bait and ("Lowest real · bait at " .. GW.Money(r.bait) .. " ignored") or "Lowest", GW.SIGNAL_BLUE
+          r.bait and string.format(L["Lowest real · bait at %s ignored"], GW.Money(r.bait)) or L["Lowest"],
+          GW.SIGNAL_BLUE
       else
         text, color = STATUS_TEXT[r.status][1], STATUS_TEXT[r.status][2]
       end
@@ -223,7 +225,8 @@ local function render()
       else
         row.cancel:Show()
         row.cancel:SetText(
-          r.cancelling and "Cancelling…" or ("Cancel" .. (cost and cost > 0 and (" · " .. GW.Money(cost)) or ""))
+          r.cancelling and L["Cancelling…"]
+            or (cost and cost > 0 and string.format(L["Cancel · %s"], GW.Money(cost)) or L["Cancel"])
         )
         row.cancel:SetEnabled(not r.cancelling and GetTime() - row.since >= GW.CONFIRM_DELAY)
       end
@@ -235,28 +238,33 @@ local function render()
 
   local progress
   if cv.waiting then
-    local w = GW.WaitText()
-    progress = string.format("%s%s · checked %d of %d", w:sub(1, 1):upper(), w:sub(2), cv.checked, cv.total)
+    -- A capitalised key, not :upper() on the first byte (that breaks Cyrillic, Korean and Chinese).
+    progress = string.format(L["%s · checked %d of %d"], GW.WaitText(true), cv.checked, cv.total)
   elseif cv.total > 0 then
     progress =
-      string.format("Checked %d of %d · %d searches this minute", cv.checked, cv.total, GW.SearchesThisMinute())
+      string.format(L["Checked %d of %d · %d searches this minute"], cv.checked, cv.total, GW.SearchesThisMinute())
   else
-    progress = #cv.list > 0 and string.format("%d searches this minute", GW.SearchesThisMinute()) or ""
+    progress = #cv.list > 0 and GW.Plural(GW.SearchesThisMinute(), "%d search this minute", "%d searches this minute")
+      or ""
   end
   view.progress:SetText(progress)
 
   if #cv.list == 0 then
-    view.empty:SetText(cv.loaded and "You have no auctions at this auction house." or "Loading your auctions…")
+    view.empty:SetText(cv.loaded and L["You have no auctions at this auction house."] or L["Loading your auctions…"])
     view.empty:Show()
   else
     view.empty:Hide()
   end
   local parts = {}
-  if counts.undercut > 0 then parts[#parts + 1] = counts.undercut .. " undercut" end
-  if counts.lowest > 0 then parts[#parts + 1] = counts.lowest .. " lowest" end
-  if counts.unchecked > 0 then parts[#parts + 1] = counts.unchecked .. " not checked" end
+  if counts.undercut > 0 then parts[#parts + 1] = GW.Plural(counts.undercut, "%d undercut", "%d undercut") end
+  if counts.lowest > 0 then parts[#parts + 1] = GW.Plural(counts.lowest, "%d lowest", "%d lowest") end
+  if counts.unchecked > 0 then parts[#parts + 1] = GW.Plural(counts.unchecked, "%d not checked", "%d not checked") end
   view.summary:SetText(
-    #parts > 0 and (table.concat(parts, " · ") .. ". One click cancels one auction; its deposit is not refunded.")
+    #parts > 0
+        and string.format(
+          L["%s. One click cancels one auction; its deposit is not refunded."],
+          table.concat(parts, " · ")
+        )
       or ""
   )
   view.next:SetEnabled(GW.NextUndercut(cv.list) ~= nil)
@@ -371,25 +379,25 @@ end
 ---@param r CancelRow?
 local function cancelRow(r)
   if not r or r.sold or r.cancelling then return end
-  if InCombatLockdown and InCombatLockdown() then return toast("Not in combat.", GW.SIGNAL_ORANGE) end
+  if InCombatLockdown and InCombatLockdown() then return toast(L["Not in combat."], GW.SIGNAL_ORANGE) end
   if C_AuctionHouse.CanCancelAuction and not C_AuctionHouse.CanCancelAuction(r.id) then
-    return toast("That auction can't be cancelled.", GW.SIGNAL_ORANGE)
+    return toast(L["That auction can't be cancelled."], GW.SIGNAL_ORANGE)
   end
   local cost = C_AuctionHouse.GetCancelCost and C_AuctionHouse.GetCancelCost(r.id) or 0
   if cost > (GetMoney and GetMoney() or 0) then
-    return toast("Cancelling costs " .. GW.Money(cost) .. ": not enough money.", GW.SIGNAL_ORANGE)
+    return toast(string.format(L["Cancelling costs %s: not enough money."], GW.Money(cost)), GW.SIGNAL_ORANGE)
   end
   r.cancelling, r.cancelAt = true, GetTime()
   cv.lastCancel = r
   C_AuctionHouse.CancelAuction(r.id)
   GW.Log("cancel sent: %s x%d (auction %s, cost %d)", r.name, r.qty, tostring(r.id), cost)
-  toast("Cancelling " .. r.name .. "…", GREY)
+  toast(string.format(L["Cancelling %s…"], r.name), GREY)
   render()
   C_Timer.After(CANCEL_TIMEOUT, function()
     if r.cancelling and r.cancelAt and GetTime() - r.cancelAt >= CANCEL_TIMEOUT - 0.1 then
       r.cancelling = nil
       toast(
-        "No answer from the auction house for " .. r.name .. ". Refresh to see if it was cancelled.",
+        string.format(L["No answer from the auction house for %s. Refresh to see if it was cancelled."], r.name),
         GW.SIGNAL_ORANGE
       )
       render()
@@ -417,7 +425,7 @@ local function onCancelled(auctionID)
   cv.cancelled[r.id] = true
   r.cancelling = nil
   cv.repost = r
-  toast(string.format("Cancelled %d × %s. It comes back by mail.", r.qty, r.name), GW.SIGNAL_BLUE)
+  toast(string.format(L["Cancelled %d × %s. It comes back by mail."], r.qty, r.name), GW.SIGNAL_BLUE)
   view.repost:Show()
   render()
 end
@@ -429,7 +437,7 @@ function GW.CancelNextUndercut()
   if r then
     cancelRow(r)
   else
-    toast("No undercut auctions left.", GREY)
+    toast(L["No undercut auctions left."], GREY)
   end
 end
 
@@ -443,10 +451,10 @@ local function build(parent)
   view = CreateFrame("Frame", nil, parent)
   view:SetAllPoints()
 
-  local h = UI.Header(view, "Your auctions", 12, -8)
+  local h = UI.Header(view, L["Your auctions"], 12, -8)
   view.progress = fs(view, "GameFontDisableSmall", "LEFT")
   view.progress:SetPoint("LEFT", h, "RIGHT", 12, 0)
-  local refresh = UI.Button(view, "Refresh", 90, 22)
+  local refresh = UI.Button(view, L["Refresh"], 90, 22)
   refresh:SetPoint("TOPRIGHT", -12, -4)
   refresh:SetScript("OnClick", function()
     toast("")
@@ -454,7 +462,13 @@ local function build(parent)
     queryOwned()
   end)
 
-  local cols = { { "Item", 12 }, { "Your price", 380 }, { "Time left", 500 }, { "Status", 600 }, { "Action", 832 } }
+  local cols = {
+    { L["Item"], 12 },
+    { L["Your price"], 380 },
+    { L["Time left"], 500 },
+    { L["Status"], 600 },
+    { L["Action"], 832 },
+  }
   for _, c in ipairs(cols) do
     local f = fs(view, "GameFontDisableSmall", "LEFT")
     f:SetPoint("TOPLEFT", c[2], -34)
@@ -517,13 +531,13 @@ local function build(parent)
   view.toast = fs(view, "GameFontHighlightSmall", "LEFT")
   view.toast:SetPoint("BOTTOMLEFT", 12, 16)
   view.toast:SetWidth(560)
-  view.repost = UI.Button(view, "Repost in Sell", 130, 24)
+  view.repost = UI.Button(view, L["Repost in Sell"], 130, 24)
   view.repost:SetPoint("BOTTOMLEFT", 580, 10)
   view.repost:SetScript("OnClick", function()
     if cv.repost and GW.SellItem then GW.SellItem(cv.repost.itemID) end
   end)
   view.repost:Hide()
-  view.next = UI.Button(view, "Cancel Next Undercut", 220, 26)
+  view.next = UI.Button(view, L["Cancel Next Undercut"], 220, 26)
   view.next:SetPoint("BOTTOMRIGHT", -12, 10)
   view.next:SetScript("OnClick", GW.CancelNextUndercut)
 end

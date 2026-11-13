@@ -8,6 +8,7 @@
 --- hooks or changes Blizzard's frames or recipe rows, assigns no Blizzard globals and calls no
 --- crafting or protected functions. It opens on TRADE_SKILL_SHOW and closes on TRADE_SKILL_CLOSE.
 local _, GW = ...
+local L = GW.L
 
 local W, H = 680, 540
 local ROWS, ROW_H = 15, 28
@@ -48,13 +49,13 @@ local function showUnlearned() return GoldwrightDB and GoldwrightDB.craftUnlearn
 ---@param itemID number|nil
 ---@return string name
 local function itemName(itemID)
-  if not itemID then return "Unknown material" end
+  if not itemID then return L["Unknown material"] end
   local name = C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(itemID)
   if not name then
     local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
     name = getInfo and getInfo(itemID)
   end
-  return name or ("Item " .. itemID)
+  return name or string.format(L["Item %s"], itemID)
 end
 
 --- The badge for a recipe row: "+9c profit" (blue), "−4c loss" (orange), or a grey note.
@@ -63,19 +64,43 @@ end
 ---@return number[] color {r, g, b}
 function GW.ProfitBadge(p)
   if p.profit then
-    if p.profit >= 0.5 then return GW.SignedMoney(p.profit) .. " profit", GW.SIGNAL_BLUE end
-    if p.profit <= -0.5 then return GW.SignedMoney(p.profit) .. " loss", GW.SIGNAL_ORANGE end
-    return "Break even", GREY
+    if p.profit >= 0.5 then return string.format(L["%s profit"], GW.SignedMoney(p.profit)), GW.SIGNAL_BLUE end
+    if p.profit <= -0.5 then return string.format(L["%s loss"], GW.SignedMoney(p.profit)), GW.SIGNAL_ORANGE end
+    return L["Break even"], GREY
   end
-  if p.noOutput then return "No item made", GREY end
-  return "No price data", GREY
+  if p.noOutput then return L["No item made"], GREY end
+  return L["No price data"], GREY
+end
+
+--- The detail's profit line: the badge "per craft" (when the profit is known), plus the recipe's
+--- currencies when it takes any. One whole sentence per case, so each can be translated.
+---@param p GoldwrightCraftPrice
+---@param cur string|nil the currencies (GW.CurrencyText), nil without any
+---@return string text
+local function profitLine(p, cur)
+  local money = p.profit and GW.SignedMoney(p.profit)
+  if cur then
+    if p.profit then
+      if p.profit >= 0.5 then return string.format(L["%s profit per craft, plus %s"], money, cur) end
+      if p.profit <= -0.5 then return string.format(L["%s loss per craft, plus %s"], money, cur) end
+      return string.format(L["Break even per craft, plus %s"], cur)
+    end
+    if p.noOutput then return string.format(L["No item made, plus %s"], cur) end
+    return string.format(L["No price data, plus %s"], cur)
+  end
+  if p.profit then
+    if p.profit >= 0.5 then return string.format(L["%s profit per craft"], money) end
+    if p.profit <= -0.5 then return string.format(L["%s loss per craft"], money) end
+    return L["Break even per craft"]
+  end
+  return (GW.ProfitBadge(p))
 end
 
 --- The house name for a side ("Alliance", "Blackwater").
 ---@param side string|nil
 ---@return string name "" without a side
 local function houseName(side)
-  if side == "vendor" then return "Vendor" end
+  if side == "vendor" then return L["Vendor"] end
   return side and GW.HOUSE_NAMES[side] or ""
 end
 
@@ -85,7 +110,7 @@ end
 local function qtyText(n)
   local r = math.floor(n * 10 + 0.5) / 10
   if r == math.floor(r) then return string.format("%d", r) end
-  return string.format("%.1f", r)
+  return GW.Decimal(r)
 end
 
 --- The short row hint for a recipe whose output pays more at the other house: "+40% at Blackwater".
@@ -93,8 +118,8 @@ end
 ---@return string|nil text
 local function hintShort(hint)
   if not hint then return nil end
-  if hint.pct then return string.format("+%d%% at %s", hint.pct, houseName(hint.side)) end
-  return "Sells at " .. houseName(hint.side)
+  if hint.pct then return string.format(L["+%d%% at %s"], hint.pct, houseName(hint.side)) end
+  return string.format(L["Sells at %s"], houseName(hint.side))
 end
 
 --- The detail note: where the prices come from, or why the other house is worth a look.
@@ -102,21 +127,35 @@ end
 ---@return string text
 local function hintNote(p)
   local h = p.hint
-  if not h then return string.format("Prices from the %s auction house.", houseName(p.side)) end
-  local sold = h.boughtPerDay and string.format(" (%s there)", GW.SoldText(h.boughtPerDay)) or ""
+  if not h then return string.format(L["Prices from the %s auction house."], houseName(p.side)) end
+  local sold = h.boughtPerDay and GW.SoldText(h.boughtPerDay)
   if h.pct then
+    if sold then
+      return string.format(
+        L["Nets ~%d%% more at %s after its cut (%s there). Switch with the Prices button above."],
+        h.pct,
+        houseName(h.side),
+        sold
+      )
+    end
     return string.format(
-      "Nets ~%d%% more at %s after its cut%s. Switch with the Prices button above.",
+      L["Nets ~%d%% more at %s after its cut. Switch with the Prices button above."],
       h.pct,
+      houseName(h.side)
+    )
+  end
+  if sold then
+    return string.format(
+      L["No price at %s, but %s has proven buyers (%s there). Switch with the Prices button above."],
+      houseName(p.side),
       houseName(h.side),
       sold
     )
   end
   return string.format(
-    "No price at %s, but %s has proven buyers%s. Switch with the Prices button above.",
+    L["No price at %s, but %s has proven buyers. Switch with the Prices button above."],
     houseName(p.side),
-    houseName(h.side),
-    sold
+    houseName(h.side)
   )
 end
 
@@ -148,12 +187,12 @@ local function renderList()
       local hint = hintShort(r.price.hint)
       setColor(row.sub, GREY)
       if not rec.learned then
-        row.sub:SetText("Not learned")
+        row.sub:SetText(L["Not learned"])
       elseif hint then
         row.sub:SetText(hint)
         setColor(row.sub, GW.SIGNAL_BLUE)
       elseif cur then
-        row.sub:SetText("Also needs " .. cur)
+        row.sub:SetText(string.format(L["Also needs %s"], cur))
       else
         row.sub:SetText("")
       end
@@ -169,17 +208,19 @@ local function renderList()
   if n > 0 then
     panel.empty:SetText("")
   elseif state.hidden > 0 then
-    panel.empty:SetText("No learned recipes yet. Click Show Unlearned to see the rest.")
+    panel.empty:SetText(L["No learned recipes yet. Click Show Unlearned to see the rest."])
   else
-    panel.empty:SetText("No recipes yet: they load when the profession window opens.")
+    panel.empty:SetText(L["No recipes yet: they load when the profession window opens."])
   end
   panel.sortProfit:SetEnabled(sortBy() ~= "profit")
   panel.sortName:SetEnabled(sortBy() ~= "name")
-  panel.unlearned:SetText(showUnlearned() and "Hide Unlearned" or "Show Unlearned")
-  panel.house:SetText("Prices: " .. houseName(GW.CraftSide()))
+  panel.unlearned:SetText(showUnlearned() and L["Hide Unlearned"] or L["Show Unlearned"])
+  panel.house:SetText(string.format(L["Prices: %s"], houseName(GW.CraftSide())))
   panel.house:SetShown(GW.House().side ~= "N")
-  local shownText = GW.Number(n) .. (n == 1 and " recipe" or " recipes")
-  if state.hidden > 0 then shownText = shownText .. " · " .. GW.Number(state.hidden) .. " not learned hidden" end
+  local shownText = GW.Plural(n, "%d recipe", "%d recipes")
+  if state.hidden > 0 then
+    shownText = shownText .. " · " .. string.format(L["%s not learned hidden"], GW.Number(state.hidden))
+  end
   panel.count:SetText(shownText)
 end
 
@@ -197,8 +238,8 @@ local function renderDetail()
   local d = panel.detail
   local r = selectedRow()
   if not r then
-    d.title:SetText("Select a recipe")
-    d.makes:SetText("Its materials, cost and profit show here.")
+    d.title:SetText(L["Select a recipe"])
+    d.makes:SetText(L["Its materials, cost and profit show here."])
     for _, m in ipairs(d.mats) do
       m:Hide()
     end
@@ -220,14 +261,17 @@ local function renderDetail()
   local makes
   if rec.outputItemID then
     local qty = rec.qtyMin == rec.qtyMax and tostring(rec.qtyMin) or (rec.qtyMin .. "–" .. rec.qtyMax)
-    makes = string.format("Makes %s × %s", qty, itemName(rec.outputItemID))
-    if rec.qtyAssumed then makes = makes .. " (count unknown, 1 assumed)" end
+    makes = string.format(
+      rec.qtyAssumed and L["Makes %s × %s (count unknown, 1 assumed)"] or L["Makes %s × %s"],
+      qty,
+      itemName(rec.outputItemID)
+    )
   elseif rec.noSchematic then
-    makes = "The game didn't say what this recipe makes."
+    makes = L["The game didn't say what this recipe makes."]
   else
-    makes = "Makes no item to sell."
+    makes = L["Makes no item to sell."]
   end
-  if not rec.learned then makes = makes .. " · Not learned" end
+  if not rec.learned then makes = makes .. " · " .. L["Not learned"] end
   d.makes:SetText(makes)
 
   -- materials table: name ×qty | cost | house
@@ -240,7 +284,7 @@ local function renderDetail()
         setColor(m.cost, WHITE)
         m.house:SetText(houseName(mat.side))
       else
-        m.cost:SetText("No price data")
+        m.cost:SetText(L["No price data"])
         setColor(m.cost, GREY)
         m.house:SetText("")
       end
@@ -251,22 +295,22 @@ local function renderDetail()
   end
   local extra = #p.materials - MAX_MATS
   if extra > 0 then
-    d.more:SetText(string.format("+ %d more", extra))
+    d.more:SetText(string.format(L["+ %d more"], extra))
   elseif #p.materials == 0 then
-    d.more:SetText(rec.noSchematic and "Materials unknown." or "No materials.")
+    d.more:SetText(rec.noSchematic and L["Materials unknown."] or L["No materials."])
   else
     d.more:SetText("")
   end
   local cur = GW.CurrencyText(p.currencies)
-  d.currency:SetText(cur and ("Also needs " .. cur .. " (not counted in gold)") or "")
+  d.currency:SetText(cur and string.format(L["Also needs %s (not counted in gold)"], cur) or "")
 
   -- summary
   if p.cost then
     setLine(d.lines.cost, GW.Money(p.cost))
   elseif p.missing > 0 and #p.materials > 1 then
-    setLine(d.lines.cost, string.format("No price data for %d of %d", p.missing, #p.materials), GREY)
+    setLine(d.lines.cost, string.format(L["No price data for %d of %d"], p.missing, #p.materials), GREY)
   else
-    setLine(d.lines.cost, "No price data", GREY)
+    setLine(d.lines.cost, L["No price data"], GREY)
   end
   if p.value then
     local each = p.avgQty == 1 and "" or string.format(" (%s × %s)", qtyText(p.avgQty), GW.Money(p.outputUnit))
@@ -274,24 +318,22 @@ local function renderDetail()
     setLine(
       d.lines.cut,
       string.format(
-        "−%s (%s%% at %s)",
+        L["−%s (%s%% at %s)"],
         GW.Money(p.cut),
         qtyText((GW.CUT[p.outputSide] or 0.05) * 100),
         houseName(p.outputSide)
       )
     )
   else
-    setLine(d.lines.value, p.noOutput and "No item made" or "No price data", GREY)
+    setLine(d.lines.value, p.noOutput and L["No item made"] or L["No price data"], GREY)
     setLine(d.lines.cut, "", GREY)
   end
-  local text, color = GW.ProfitBadge(p)
-  if p.profit then text = text .. " per craft" end
-  if cur then text = text .. ", plus " .. cur end
-  setLine(d.lines.profit, text, color)
+  local _, color = GW.ProfitBadge(p)
+  setLine(d.lines.profit, profitLine(p, cur), color)
   if p.rateText then
     setLine(d.lines.rate, p.rateText)
   else
-    setLine(d.lines.rate, "Unknown", GREY)
+    setLine(d.lines.rate, L["Unknown"], GREY)
   end
   d.note:SetText(hintNote(p))
 end
@@ -301,17 +343,20 @@ local function renderStatus()
   local pack = GW.Pack and GW.Pack()
   if pack then
     panel.status:SetText(
-      "Market values from Goldwright Data, snapshot " .. GW.Age(pack.snapshotAt) .. ". Deposits not included."
+      string.format(
+        L["Market values from Goldwright Data, snapshot %s. Deposits not included."],
+        GW.Age(pack.snapshotAt)
+      )
     )
   else
-    panel.status:SetText("No data pack: install Goldwright Data for prices.")
+    panel.status:SetText(L["No data pack: install Goldwright Data for prices."])
   end
 end
 
 --- Redraws everything.
 local function render()
   if not panel then return end
-  UI.SetTitle(panel, "Goldwright · " .. (GW.ProfessionName() or "Crafting"))
+  UI.SetTitle(panel, "Goldwright · " .. (GW.ProfessionName() or L["Crafting"]))
   renderList()
   renderDetail()
   renderStatus()
@@ -357,36 +402,36 @@ local function createPanel()
   panel = UI.Window("GoldwrightCraftFrame", W, H, { title = "Goldwright", movable = true })
   GW.craftPanel = panel
 
-  panel.sortProfit = UI.Button(panel, "Sort by Profit", 110, 22, function()
+  panel.sortProfit = UI.Button(panel, L["Sort by Profit"], 110, 22, function()
     GoldwrightDB.craftSort = nil
     refresh()
   end)
   panel.sortProfit:SetPoint("TOPLEFT", 14, -30)
-  panel.sortName = UI.Button(panel, "Sort by Name", 110, 22, function()
+  panel.sortName = UI.Button(panel, L["Sort by Name"], 110, 22, function()
     GoldwrightDB.craftSort = "name"
     refresh()
   end)
   panel.sortName:SetPoint("LEFT", panel.sortProfit, "RIGHT", 4, 0)
-  panel.unlearned = UI.Button(panel, "Show Unlearned", 120, 22, function()
+  panel.unlearned = UI.Button(panel, L["Show Unlearned"], 120, 22, function()
     GoldwrightDB.craftUnlearned = not showUnlearned() or nil
     state.offset = 0
     refresh()
   end)
   panel.unlearned:SetPoint("LEFT", panel.sortName, "RIGHT", 4, 0)
-  panel.house = UI.Button(panel, "Prices: Alliance", 150, 22, function()
+  panel.house = UI.Button(panel, string.format(L["Prices: %s"], GW.HOUSE_NAMES.A), 150, 22, function()
     GW.SetCraftSide(GW.CraftSide() == "N" and GW.House().side or "N")
     refresh()
   end)
   panel.house:SetPoint("LEFT", panel.unlearned, "RIGHT", 8, 0)
   panel.house:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-    GameTooltip:SetText("Auction house for prices")
-    GameTooltip:AddLine("Materials, output value and the cut all come from this house.", 1, 1, 1, true)
-    GameTooltip:AddLine("Click to switch between your faction's house and Blackwater.", 1, 1, 1, true)
+    GameTooltip:SetText(L["Auction house for prices"])
+    GameTooltip:AddLine(L["Materials, output value and the cut all come from this house."], 1, 1, 1, true)
+    GameTooltip:AddLine(L["Click to switch between your faction's house and Blackwater."], 1, 1, 1, true)
     GameTooltip:Show()
   end)
   panel.house:SetScript("OnLeave", function() GameTooltip:Hide() end)
-  local gear = UI.Button(panel, "Settings", 90, 22, function()
+  local gear = UI.Button(panel, L["Settings"], 90, 22, function()
     if GW.OpenSettings then GW.OpenSettings() end
   end)
   gear:SetPoint("TOPRIGHT", -14, -30)
@@ -471,7 +516,7 @@ local function createPanel()
   d.makes = fs(view, "GameFontHighlightSmall", "LEFT")
   d.makes:SetPoint("TOPLEFT", x, -32)
   d.makes:SetWidth(colW)
-  header(view, "Materials", x, -56)
+  header(view, L["Materials"], x, -56)
   d.mats = {}
   for i = 1, MAX_MATS do
     local m = CreateFrame("Frame", nil, view)
@@ -497,14 +542,14 @@ local function createPanel()
   d.currency:SetPoint("TOPLEFT", x, y - 18)
   d.currency:SetWidth(colW)
 
-  header(view, "Per Craft", x, y - 44)
+  header(view, L["Per Craft"], x, y - 44)
   d.lines = {}
   local labels = {
-    { key = "cost", label = "Total cost" },
-    { key = "value", label = "Output value" },
-    { key = "cut", label = "Auction house cut" },
-    { key = "profit", label = "Profit" },
-    { key = "rate", label = "Sell rate" },
+    { key = "cost", label = L["Total cost"] },
+    { key = "value", label = L["Output value"] },
+    { key = "cut", label = L["Auction house cut"] },
+    { key = "profit", label = L["Profit"] },
+    { key = "rate", label = L["Sell rate"] },
   }
   for i, l in ipairs(labels) do
     local ly = y - 64 - (i - 1) * 20
@@ -601,7 +646,7 @@ end
 --- Shows or hides the panel (/gw craft); only while a profession window is open.
 function GW.ToggleCraftPanel()
   if not state.open then
-    GW.Print("Open a profession first.")
+    GW.Print(L["Open a profession first."])
     return
   end
   if panel and panel:IsShown() then

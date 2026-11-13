@@ -3,6 +3,7 @@
 --- (StartCommoditiesPurchase), a second click confirms (ConfirmCommoditiesPurchase), never automatic.
 --- Gear: Show sends a browse search so Blizzard's own Buy list shows the item; the player buys there.
 local _, GW = ...
+local L = GW.L
 
 local ROWS, ROW_H = 10, 30 -- entry table: visible rows, row height
 local LIST_ROWS = 11 -- visible rows in the lists column
@@ -58,13 +59,25 @@ function GW.ParseMoney(text)
   local pct = text:match("^(%d+)%s*%%$")
   if pct then return nil, tonumber(pct) end
   if text:match("^%d+$") then return tonumber(text), nil end
-  local total, found = 0, false
-  for num, unit in text:gmatch("(%d+)%s*([gsc])") do
-    found = true
-    total = total + tonumber(num) * (unit == "g" and 10000 or unit == "s" and 100 or 1)
+  -- The English coin letters always work; the game's own (German g s k) work too.
+  local value = { g = 10000, s = 100, c = 1 }
+  for sym, v in pairs({
+    [GOLD_AMOUNT_SYMBOL or "g"] = 10000,
+    [SILVER_AMOUNT_SYMBOL or "s"] = 100,
+    [COPPER_AMOUNT_SYMBOL or "c"] = 1,
+  }) do
+    sym = sym:lower()
+    if sym ~= "" and not value[sym] then value[sym] = v end
   end
-  local rest = text:gsub("%d+%s*[gsc]", ""):gsub("%s+", "")
-  if not found or rest ~= "" then return nil, nil end
+  local total, found, rest = 0, false, text
+  for num, unit in text:gmatch("(%d+)%s*([^%d%s]+)") do
+    local v = value[unit]
+    if not v then return nil, nil end
+    found = true
+    total = total + tonumber(num) * v
+    rest = rest:gsub(num .. "%s*" .. unit:gsub("%p", "%%%0"), "", 1)
+  end
+  if not found or rest:gsub("%s+", "") ~= "" then return nil, nil end
   return total, nil
 end
 
@@ -94,7 +107,7 @@ end
 ---@return string? err message for the player when the input is invalid
 function GW.MakeEntry(itemText, maxText, wantText)
   itemText = strtrim(itemText or "")
-  if itemText == "" then return nil, "Type an item name or Shift-click an item." end
+  if itemText == "" then return nil, L["Type an item name or Shift-click an item."] end
   local id, name = GW.LinkItem(itemText)
   if not id then
     name = itemText:gsub('^"(.*)"$', "%1")
@@ -102,14 +115,14 @@ function GW.MakeEntry(itemText, maxText, wantText)
     local _, link = getInfo and getInfo(name)
     id = link and GW.LinkItem(link)
   end
-  local e = { name = name or ("item " .. id), itemID = id }
+  local e = { name = name or string.format(L["item %d"], id), itemID = id }
   if strtrim(maxText or "") ~= "" then
     e.max, e.maxPct = GW.ParseMoney(maxText)
-    if not e.max and not e.maxPct then return nil, "Max price: e.g. 75c, 1s 50c, 2g or 80% (of market)." end
+    if not e.max and not e.maxPct then return nil, L["Max price: e.g. 75c, 1s 50c, 2g or 80% (of market)."] end
   end
   if strtrim(wantText or "") ~= "" then
     e.want = tonumber(wantText)
-    if not e.want or e.want < 1 then return nil, "Want: a number of items." end
+    if not e.want or e.want < 1 then return nil, L["Want: a number of items."] end
   end
   return e
 end
@@ -171,9 +184,9 @@ end
 ---@return GoldwrightShoppingList[] lists
 ---@return string|nil problem why something was refused or left out
 function GW.ImportLists(text)
-  local L = GW.IMPORT_LIMITS
+  local lim = GW.IMPORT_LIMITS
   text = text or ""
-  if #text > L.chars then return {}, "That text is too long to be a shopping list." end
+  if #text > lim.chars then return {}, L["That text is too long to be a shopping list."] end
   local out, cut = {}, false
   for line in text:gmatch("[^\r\n]+") do
     local pieces = {}
@@ -182,13 +195,13 @@ function GW.ImportLists(text)
     end
     local name = safeText(pieces[1] or "")
     if name ~= "" and #pieces > 1 then
-      if #out >= L.lists then
+      if #out >= lim.lists then
         cut = true
         break
       end
       local list = { name = name, entries = {} }
       for i = 2, #pieces do
-        if #list.entries >= L.entries then
+        if #list.entries >= lim.entries then
           cut = true
           break
         end
@@ -200,7 +213,7 @@ function GW.ImportLists(text)
         if item ~= "" then
           local e = { name = item }
           for j = 2, #fields do
-            local f = fields[j]:sub(1, L.field)
+            local f = fields[j]:sub(1, lim.field)
             local eq = f:find("=", 1, true)
             local k = eq and strtrim(f:sub(1, eq - 1)):lower()
             local v = eq and strtrim(f:sub(eq + 1)) or ""
@@ -224,7 +237,7 @@ function GW.ImportLists(text)
     end
   end
   return out,
-    cut and string.format("Only the first %d lists and %d items per list were kept.", L.lists, L.entries) or nil
+    cut and string.format(L["Only the first %d lists and %d items per list were kept."], lim.lists, lim.entries) or nil
 end
 
 --- The game's name for an item id, when the client knows it (nil otherwise, e.g. not cached yet).
@@ -312,9 +325,11 @@ function GW.MarketText(price, id)
   local m = market(id)
   if not (m and m > 0 and price) then return nil end
   local pct = math.floor((price / m - 1) * 100 + 0.5)
-  if math.abs(pct) < 3 then return "at market", GREY end
-  if pct < 0 then return -pct .. "% under market", pct <= -GW.Opt("signalPct") and GW.SIGNAL_BLUE or GREY end
-  return pct .. "% over market", pct >= GW.Opt("signalPct") and GW.SIGNAL_ORANGE or GREY
+  if math.abs(pct) < 3 then return L["at market"], GREY end
+  if pct < 0 then
+    return string.format(L["%d%% under market"], -pct), pct <= -GW.Opt("signalPct") and GW.SIGNAL_BLUE or GREY
+  end
+  return string.format(L["%d%% over market"], pct), pct >= GW.Opt("signalPct") and GW.SIGNAL_ORANGE or GREY
 end
 
 ---------------------------------------------------------------------------
@@ -436,7 +451,7 @@ end
 --- SHOP-3: runs the selected list (or one entry of it). Needs the auction house open.
 ---@param only? GoldwrightShoppingEntry check just this entry
 function GW.RunList(only)
-  if not (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) then return GW.Print("Open the auction house first.") end
+  if not (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) then return GW.Print(L["Open the auction house first."]) end
   local list = selectedList()
   if not list then return end
   sv.queue, sv.checked, sv.current, sv.token = {}, 0, nil, nil
@@ -587,22 +602,15 @@ end
 --- through, so the row stops offering it until the list is checked again, and a late result still
 --- counts (sv.unanswered).
 ---@param b GoldwrightShoppingBuy
----@param why string start of the message
-local function buyUnanswered(b, why)
+---@param why string reason for the debug log (English)
+---@param message string the player's message, a translated format string with the quantity and item name
+local function buyUnanswered(b, why, message)
   if sv.buy == b then sv.buy = nil end
   b.unansweredAt = GetTime()
   sv.unanswered = b
   sv.results[b.entry] = nil
   GW.Log("shopping confirm unanswered: %d x %s (%s)", b.qty, b.entry.name, why)
-  tellBuy(
-    string.format(
-      "%s about %d × %s. It may have been bought: check your mailbox before buying again.",
-      why,
-      b.qty,
-      b.entry.name
-    ),
-    GW.SIGNAL_ORANGE
-  )
+  tellBuy(string.format(message, b.qty, b.entry.name), GW.SIGNAL_ORANGE)
   if render then render() end
 end
 
@@ -613,7 +621,7 @@ end
 local function buyClick(e)
   local res = sv.results[e]
   local b = sv.buy
-  if InCombatLockdown and InCombatLockdown() then return toast("Not in combat.", GW.SIGNAL_ORANGE) end
+  if InCombatLockdown and InCombatLockdown() then return toast(L["Not in combat."], GW.SIGNAL_ORANGE) end
   if b and b.confirming then return end -- already buying: never confirm twice
   if b and b.entry == e and b.total then
     if GetTime() - (b.quotedAt or 0) < GW.CONFIRM_DELAY then return end -- a double click on Buy
@@ -621,10 +629,16 @@ local function buyClick(e)
     b.confirming = true
     C_AuctionHouse.ConfirmCommoditiesPurchase(e.itemID, b.qty)
     GW.Log("shopping confirm: %d x %s for %d", b.qty, e.name, b.total)
-    toast("Buying…", GREY)
+    toast(L["Buying…"], GREY)
     if render then render() end
     C_Timer.After(CONFIRM_TIMEOUT, function()
-      if sv.buy == b and not b.done then buyUnanswered(b, "No answer from the auction house") end
+      if sv.buy == b and not b.done then
+        buyUnanswered(
+          b,
+          "No answer from the auction house",
+          L["No answer from the auction house about %d × %s. It may have been bought: check your mailbox before buying again."]
+        )
+      end
     end)
     return
   end
@@ -637,14 +651,14 @@ local function buyClick(e)
   local token = sv.buy
   C_AuctionHouse.StartCommoditiesPurchase(e.itemID, qty)
   GW.Log("shopping buy start: %d x %s (estimate %d)", qty, e.name, res.plan.total)
-  toast("Asking the auction house for the exact price…", GREY)
+  toast(L["Asking the auction house for the exact price…"], GREY)
   if render then render() end
   -- Only a buy that never got a price is cancelled here; a quoted one has its own wait
   -- (onBuyEvent) and a confirmed one is never cancelled.
   C_Timer.After(BUY_TIMEOUT, function()
     if sv.buy == token and not token.done and not token.total and not token.confirming then
       cancelBuy()
-      toast("No answer from the auction house. Nothing was bought.", GW.SIGNAL_ORANGE)
+      toast(L["No answer from the auction house. Nothing was bought."], GW.SIGNAL_ORANGE)
       if render then render() end
     end
   end)
@@ -653,10 +667,10 @@ end
 --- The Show button of a gear row: sends a browse search so Blizzard's Buy list shows the item.
 ---@param e GoldwrightShoppingEntry
 local function showInBuyTab(e)
-  if not GW.CanSearch() then return toast("Waiting for a search slot: try again in a moment.", GW.SIGNAL_ORANGE) end
+  if not GW.CanSearch() then return toast(L["Waiting for a search slot: try again in a moment."], GW.SIGNAL_ORANGE) end
   GW.NoteSearch()
   C_AuctionHouse.SendBrowseQuery({ searchString = e.name, sorts = sorts(), filters = {}, itemClassFilters = {} })
-  toast("Shown in Blizzard's list on the left: buy it there.", GREY)
+  toast(L["Shown in Blizzard's list on the left: buy it there."], GREY)
 end
 
 --- Handles the commodity purchase events for the pending buy: the exact price (with warnings when it
@@ -679,9 +693,9 @@ local function onBuyEvent(event, a1, a2)
     sv.unanswered = nil
     if event == "COMMODITY_PURCHASE_SUCCEEDED" then
       sv.bought[e] = (sv.bought[e] or 0) + b.qty
-      tellBuy(string.format("It went through after all: bought %d × %s.", b.qty, e.name), GW.SIGNAL_BLUE)
+      tellBuy(string.format(L["It went through after all: bought %d × %s."], b.qty, e.name), GW.SIGNAL_BLUE)
     else
-      tellBuy(string.format("The purchase of %d × %s failed. Nothing was bought.", b.qty, e.name), GW.SIGNAL_ORANGE)
+      tellBuy(string.format(L["The purchase of %d × %s failed. Nothing was bought."], b.qty, e.name), GW.SIGNAL_ORANGE)
     end
     if render then render() end
     return
@@ -698,7 +712,7 @@ local function onBuyEvent(event, a1, a2)
     C_Timer.After(QUOTE_TIMEOUT, function()
       if sv.buy == b and b.quote == quote and not b.confirming and not b.done then
         cancelBuy()
-        toast("The price wasn't confirmed in time. Nothing was bought: click Buy again.", GREY)
+        toast(L["The price wasn't confirmed in time. Nothing was bought: click Buy again."], GREY)
         if render then render() end
       end
     end)
@@ -706,18 +720,18 @@ local function onBuyEvent(event, a1, a2)
     if max and b.unit and b.unit > max then
       toast(
         string.format(
-          "The price went up: %s each is over your max (%s). Confirm only if you still want it.",
+          L["The price went up: %s each is over your max (%s). Confirm only if you still want it."],
           GW.Money(b.unit),
           GW.Money(max)
         ),
         GW.SIGNAL_ORANGE
       )
     elseif b.total and GetMoney and b.total > GetMoney() then
-      toast("Not enough gold for " .. GW.Money(b.total) .. ".", GW.SIGNAL_ORANGE)
+      toast(string.format(L["Not enough gold for %s."], GW.Money(b.total)), GW.SIGNAL_ORANGE)
     elseif b.total and b.total > b.estimate then
       toast(
         string.format(
-          "%d × %s for %s (%s each): %s more than the list showed. Confirm only if you still want it.",
+          L["%d × %s for %s (%s each): %s more than the list showed. Confirm only if you still want it."],
           b.qty,
           e.name,
           GW.Money(b.total),
@@ -729,7 +743,7 @@ local function onBuyEvent(event, a1, a2)
     else
       toast(
         string.format(
-          "%d × %s for %s (%s each). Click Confirm to buy.",
+          L["%d × %s for %s (%s each). Click Confirm to buy."],
           b.qty,
           e.name,
           GW.Money(b.total),
@@ -740,11 +754,11 @@ local function onBuyEvent(event, a1, a2)
     end
   elseif event == "COMMODITY_PRICE_UNAVAILABLE" then
     sv.buy = nil
-    toast("Those listings are gone. Run the list again.", GW.SIGNAL_ORANGE)
+    toast(L["Those listings are gone. Run the list again."], GW.SIGNAL_ORANGE)
   elseif event == "COMMODITY_PURCHASE_SUCCEEDED" then
     b.done = true
     sv.bought[e] = (sv.bought[e] or 0) + b.qty
-    tellBuy(string.format("Bought %d × %s for %s.", b.qty, e.name, GW.Money(b.total or b.estimate)), GW.SIGNAL_BLUE)
+    tellBuy(string.format(L["Bought %d × %s for %s."], b.qty, e.name, GW.Money(b.total or b.estimate)), GW.SIGNAL_BLUE)
     sv.buy = nil
     sv.results[e] = nil
     -- see what's left (only while the tab is open; otherwise the next run checks it)
@@ -753,7 +767,7 @@ local function onBuyEvent(event, a1, a2)
     end)
   elseif event == "COMMODITY_PURCHASE_FAILED" then
     sv.buy = nil
-    tellBuy("The purchase failed. Nothing was bought.", GW.SIGNAL_ORANGE)
+    tellBuy(L["The purchase failed. Nothing was bought."], GW.SIGNAL_ORANGE)
   end
   if render then render() end
 end
@@ -769,34 +783,31 @@ local n = GW.Number
 ---@return number[] color {r, g, b}
 local function foundText(e)
   local r = sv.results[e]
-  if sv.current == e then return "Searching…", GREY end
+  if sv.current == e then return L["Searching…"], GREY end
   if not r then
     for _, q in ipairs(sv.queue) do
-      if q == e then return "Waiting…", GREY end
+      if q == e then return L["Waiting…"], GREY end
     end
-    return (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) and "Not checked yet: Run List" or "Not checked yet", GREY
+    return (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) and L["Not checked yet: Run List"] or L["Not checked yet"],
+      GREY
   end
-  if r.kind == "unknown" then return "No answer from the auction house", GREY end
-  if r.kind == "none" then return "None listed", GREY end
-  if r.kind == "notfound" then return "No item by that name is listed", GW.SIGNAL_ORANGE end
+  if r.kind == "unknown" then return L["No answer from the auction house"], GREY end
+  if r.kind == "none" then return L["None listed"], GREY end
+  if r.kind == "notfound" then return L["No item by that name is listed"], GW.SIGNAL_ORANGE end
   local p, max = r.plan, GW.EntryMax(e)
-  if not p.cheapest then return "None listed", GREY end
+  if not p.cheapest then return L["None listed"], GREY end
   if max and p.available == 0 then
-    return string.format("Nothing under %s (cheapest %s)", GW.Money(max), GW.Money(p.cheapest)), GREY
+    return string.format(L["Nothing under %s (cheapest %s)"], GW.Money(max), GW.Money(p.cheapest)), GREY
   end
   local text
   if r.kind == "commodity" then
     text = (
-      max and string.format("%s at ≤ %s", n(p.available), GW.Money(max))
-      or string.format("%s listed from %s", n(p.listed), GW.Money(p.cheapest))
-    ) .. (sv.bought[e] and (" · bought " .. sv.bought[e]) or "")
+      max and string.format(L["%s at ≤ %s"], n(p.available), GW.Money(max))
+      or string.format(L["%s listed from %s"], n(p.listed), GW.Money(p.cheapest))
+    ) .. (sv.bought[e] and (" · " .. string.format(L["bought %d"], sv.bought[e])) or "")
   else
-    text = string.format(
-      "%s listed from %s%s",
-      n(p.listed),
-      GW.Money(p.cheapest),
-      r.variants and r.variants > 1 and (" (" .. r.variants .. " versions)") or ""
-    )
+    text = string.format(L["%s listed from %s"], n(p.listed), GW.Money(p.cheapest))
+      .. (r.variants and r.variants > 1 and (" " .. GW.Plural(r.variants, "(%d version)", "(%d versions)")) or "")
   end
   local mt, color = GW.MarketText(p.avg or p.cheapest, e.itemID)
   return text .. (mt and ("  ·  " .. mt) or ""), color or WHITE
@@ -830,7 +841,7 @@ render = function()
     b:SetEnabled(list ~= nil or b.always)
   end
 
-  view.title:SetText(list and list.name or "No lists yet: click New List")
+  view.title:SetText(list and list.name or L["No lists yet: click New List"])
   view.addBox:SetShown(list ~= nil)
   view.addMax:SetShown(list ~= nil)
   view.addWant:SetShown(list ~= nil)
@@ -840,10 +851,10 @@ render = function()
     progress = GW.WaitText()
   elseif sv.total > 0 then
     progress =
-      string.format("Searched %d of %d · %d searches this minute", sv.checked, sv.total, GW.SearchesThisMinute())
+      string.format(L["Searched %d of %d · %d searches this minute"], sv.checked, sv.total, GW.SearchesThisMinute())
   end
   view.progress:SetText(progress)
-  view.run:SetText(sv.running and "Stop" or "Run List")
+  view.run:SetText(sv.running and L["Stop"] or L["Run List"])
   view.run:SetEnabled(list ~= nil and #list.entries > 0)
 
   local entries = list and list.entries or {}
@@ -853,7 +864,7 @@ render = function()
     row.e = e
     if e then
       row:Show()
-      row.name:SetText(entryName(e) .. (e.itemID and "" or "  |cff9a9aa2(not found yet)|r"))
+      row.name:SetText(e.itemID and entryName(e) or string.format(L["%s  |cff9a9aa2(not found yet)|r"], entryName(e)))
       local max = GW.EntryMax(e)
       row.max:SetText(
         e.maxPct and (e.maxPct .. "%" .. (max and (" · " .. GW.Money(max)) or ""))
@@ -869,20 +880,22 @@ render = function()
       if b and b.entry == e then
         row.action:Show()
         row.action:SetText(
-          b.confirming and "Buying…" or b.total and ("Confirm · " .. GW.Money(b.total)) or "Getting price…"
+          b.confirming and L["Buying…"]
+            or b.total and string.format(L["Confirm · %s"], GW.Money(b.total))
+            or L["Getting price…"]
         )
         row.action:SetEnabled(b.total ~= nil and not b.confirming and GetTime() - (b.quotedAt or 0) >= GW.CONFIRM_DELAY)
       elseif r and r.kind == "commodity" and r.plan.units > 0 and e.want then
         row.action:Show()
-        row.action:SetText(string.format("Buy %d · %s", r.plan.units, GW.Money(r.plan.total)))
+        row.action:SetText(string.format(L["Buy %d · %s"], r.plan.units, GW.Money(r.plan.total)))
         row.action:SetEnabled(sv.buy == nil)
       elseif r and r.kind == "commodity" and r.plan.available > 0 then
         row.action:Show()
-        row.action:SetText("Set Want to Buy")
+        row.action:SetText(L["Set Want to Buy"])
         row.action:Disable()
       elseif r and r.kind == "item" and r.plan.available > 0 then
         row.action:Show()
-        row.action:SetText("Show")
+        row.action:SetText(L["Show"])
         row.action:Enable()
       else
         row.action:Hide()
@@ -924,7 +937,7 @@ StaticPopupDialogs.GOLDWRIGHT_LIST_NAME = {
   hideOnEscape = true,
 }
 StaticPopupDialogs.GOLDWRIGHT_LIST_DELETE = {
-  text = 'Delete the shopping list "%s"?',
+  text = L['Delete the shopping list "%s"?'],
   button1 = YES or "Yes",
   button2 = NO or "No",
   OnAccept = function(self, data)
@@ -948,7 +961,7 @@ end
 ---@param l GoldwrightShoppingList
 ---@return GoldwrightShoppingList
 local function copyList(l)
-  local c = { name = l.name .. " (copy)", entries = {} }
+  local c = { name = string.format(L["%s (copy)"], l.name), entries = {} }
   for _, e in ipairs(l.entries) do
     c.entries[#c.entries + 1] = { name = e.name, itemID = e.itemID, max = e.max, maxPct = e.maxPct, want = e.want }
   end
@@ -966,7 +979,7 @@ function GW.AddToList(itemText, maxText, wantText)
   local lists = GW.Lists()
   local list = selectedList()
   if not list then
-    list = { name = "Shopping", entries = {} }
+    list = { name = L["Shopping"], entries = {} }
     lists[#lists + 1] = list
     GoldwrightDB.listSel = #lists
   end
@@ -974,7 +987,7 @@ function GW.AddToList(itemText, maxText, wantText)
   if not e then return nil, err end
   for _, x in ipairs(list.entries) do
     if (e.itemID and x.itemID == e.itemID) or x.name:lower() == e.name:lower() then
-      return nil, e.name .. " is already in " .. list.name .. "."
+      return nil, string.format(L["%s is already in %s."], e.name, list.name)
     end
   end
   list.entries[#list.entries + 1] = e
@@ -1016,14 +1029,13 @@ local function showIO(mode)
         end
         if #got > 0 then GoldwrightDB.listSel = #lists end
         local msg = #got > 0
-            and string.format(
-              "Imported %d list%s with %d item%s.",
+            and GW.Plural(
               #got,
-              #got == 1 and "" or "s",
-              items,
-              items == 1 and "" or "s"
+              "Imported %d list with %s.",
+              "Imported %d lists with %s.",
+              GW.Plural(items, "%d item", "%d items")
             )
-          or "Nothing to import: one list per line, Name^Item^Item."
+          or L["Nothing to import: one list per line, Name^Item^Item."]
         if problem then msg = (#got > 0 and msg .. " " or "") .. problem end
         toast(msg, (#got > 0 and not problem) and GW.SIGNAL_BLUE or GW.SIGNAL_ORANGE)
       end
@@ -1032,19 +1044,19 @@ local function showIO(mode)
     end)
   end
   io.mode = mode
-  if io.SetTitle then io:SetTitle(mode == "import" and "Import Shopping Lists" or "Export Shopping Lists") end
+  if io.SetTitle then io:SetTitle(mode == "import" and L["Import Shopping Lists"] or L["Export Shopping Lists"]) end
   if mode == "import" then
     io.hint:SetText(
-      "Paste lists here, one per line: List name^Item^Item;max=75c;qty=20. Auctionator lists work too (names only)."
+      L["Paste lists here, one per line: List name^Item^Item;max=75c;qty=20. Auctionator lists work too (names only)."]
     )
     io.box:SetText("")
     if io.box.SetMaxLetters then io.box:SetMaxLetters(GW.IMPORT_LIMITS.chars + 1) end -- +1: "too long" is reported
-    io.ok:SetText("Import")
+    io.ok:SetText(L["Import"])
   else
-    io.hint:SetText("Copy this text (Ctrl+A, then Ctrl+C). It holds all your lists.")
+    io.hint:SetText(L["Copy this text (Ctrl+A, then Ctrl+C). It holds all your lists."])
     if io.box.SetMaxLetters then io.box:SetMaxLetters(0) end -- no limit on your own lists
     io.box:SetText(GW.ExportLists(GW.Lists()))
-    io.ok:SetText("Close")
+    io.ok:SetText(L["Close"])
     io.box:HighlightText()
   end
   io:Show()
@@ -1063,7 +1075,7 @@ local function build(parent)
   local function renameList()
     local list = selectedList()
     if list then
-      askName("Rename the shopping list:", list.name, function(name)
+      askName(L["Rename the shopping list:"], list.name, function(name)
         list.name = name
         render()
       end)
@@ -1104,26 +1116,31 @@ local function build(parent)
     {
       key = "up",
       tex = "Interface\\ChatFrame\\UI-ChatIcon-ScrollUp-Up",
-      tip = "Move up",
+      tip = L["Move up"],
       fn = function() move(-1) end,
     },
     {
       key = "down",
       tex = "Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up",
-      tip = "Move down",
+      tip = L["Move down"],
       fn = function() move(1) end,
     },
     {
       key = "rename",
       tex = "Interface\\Buttons\\UI-GuildButton-PublicNote-Up",
-      tip = "Rename (or double-click the name)",
+      tip = L["Rename (or double-click the name)"],
       fn = renameList,
     },
-    { key = "copy", tex = "Interface\\Buttons\\UI-PlusButton-Up", tip = "Duplicate this list", fn = copySelected },
-    { key = "delete", tex = "Interface\\Buttons\\UI-GroupLoot-Pass-Up", tip = "Delete this list", fn = deleteSelected },
+    { key = "copy", tex = "Interface\\Buttons\\UI-PlusButton-Up", tip = L["Duplicate this list"], fn = copySelected },
+    {
+      key = "delete",
+      tex = "Interface\\Buttons\\UI-GroupLoot-Pass-Up",
+      tip = L["Delete this list"],
+      fn = deleteSelected,
+    },
   }
 
-  UI.Header(view, "Lists", 12, -8)
+  UI.Header(view, L["Lists"], 12, -8)
   view.listRows = {}
   for i = 1, LIST_ROWS do
     local row = CreateFrame("Button", nil, view)
@@ -1181,16 +1198,16 @@ local function build(parent)
     view.listButtons[#view.listButtons + 1] = b
     return b
   end
-  lbtn("New List", 8, 36, 220, true, function()
-    askName("Name the new shopping list:", "", function(name)
+  lbtn(L["New List"], 8, 36, 220, true, function()
+    askName(L["Name the new shopping list:"], "", function(name)
       local lists = GW.Lists()
       lists[#lists + 1] = { name = name, entries = {} }
       GoldwrightDB.listSel = #lists
       render()
     end)
   end)
-  lbtn("Import", 8, 10, 108, true, function() showIO("import") end)
-  lbtn("Export", 120, 10, 108, false, function() showIO("export") end)
+  lbtn(L["Import"], 8, 10, 108, true, function() showIO("import") end)
+  lbtn(L["Export"], 120, 10, 108, false, function() showIO("export") end)
 
   UI.Divider(view, 238)
 
@@ -1232,11 +1249,11 @@ local function build(parent)
     b:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     return b
   end
-  view.addBox = box(300, X + 6, "Item", "Type a name or Shift-click an item")
-  view.addMax = box(110, X + 324, "Max price", "75c, 2g or 80%")
-  view.addWant = box(60, X + 452, "Want", "20")
+  view.addBox = box(300, X + 6, L["Item"], L["Type a name or Shift-click an item"])
+  view.addMax = box(110, X + 324, L["Max price"], L["75c, 2g or 80%"])
+  view.addWant = box(60, X + 452, L["Want"], "20")
   view.addWant:SetNumeric(true)
-  view.add = UI.Button(view, "Add Item", 100, 22)
+  view.add = UI.Button(view, L["Add Item"], 100, 22)
   view.add:SetPoint("TOPLEFT", X + 524, -52)
   --- Adds the typed item to the selected list, clears the boxes and checks the new entry.
   local function doAdd()
@@ -1246,7 +1263,7 @@ local function build(parent)
     view.addMax:SetText("")
     view.addWant:SetText("")
     view.addBox:ClearFocus()
-    toast("Added " .. e.name .. ".", GW.SIGNAL_BLUE)
+    toast(string.format(L["Added %s."], e.name), GW.SIGNAL_BLUE)
     GW.CheckEntry(e)
     render()
   end
@@ -1255,8 +1272,13 @@ local function build(parent)
     b:SetScript("OnEnterPressed", doAdd)
   end
 
-  local cols =
-    { { "Item", X }, { "Max price", X + 210 }, { "Want", X + 310 }, { "Found", X + 360 }, { "Action", X + 566 } }
+  local cols = {
+    { L["Item"], X },
+    { L["Max price"], X + 210 },
+    { L["Want"], X + 310 },
+    { L["Found"], X + 360 },
+    { L["Action"], X + 566 },
+  }
   for _, c in ipairs(cols) do
     local f = fs(view, "GameFontDisableSmall", "LEFT")
     f:SetPoint("TOPLEFT", c[2], -86)
@@ -1319,7 +1341,7 @@ local function build(parent)
   view.empty = fs(view, "GameFontDisable", "CENTER")
   view.empty:SetPoint("TOPLEFT", X, -150)
   view.empty:SetWidth(700)
-  view.empty:SetText("Add the items you buy often, with the most you'd pay. Run List checks them all in one go.")
+  view.empty:SetText(L["Add the items you buy often, with the most you'd pay. Run List checks them all in one go."])
   view.toast = fs(view, "GameFontHighlightSmall", "LEFT")
   view.toast:SetPoint("BOTTOMLEFT", X, 34)
   view.toast:SetWidth(720)
@@ -1327,7 +1349,7 @@ local function build(parent)
   note:SetPoint("BOTTOMLEFT", X, 12)
   note:SetWidth(720)
   note:SetText(
-    "Buying takes two clicks: Buy asks the auction house for the exact price, then Confirm buys. Gear: Show puts it in Blizzard's list to buy there."
+    L["Buying takes two clicks: Buy asks the auction house for the exact price, then Confirm buys. Gear: Show puts it in Blizzard's list to buy there."]
   )
 end
 
@@ -1388,7 +1410,13 @@ end
 events:SetScript("OnEvent", function(_, event, a1, a2)
   if event == "AUCTION_HOUSE_CLOSED" then
     local b = sv.buy
-    if b and b.confirming and not b.done then buyUnanswered(b, "The auction house closed before it answered") end
+    if b and b.confirming and not b.done then
+      buyUnanswered(
+        b,
+        "The auction house closed before it answered",
+        L["The auction house closed before it answered about %d × %s. It may have been bought: check your mailbox before buying again."]
+      )
+    end
     sv.buy = nil
     GW.StopList()
     return
