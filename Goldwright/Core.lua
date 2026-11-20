@@ -477,15 +477,17 @@ function GW.ItemData(key)
   -- The player's own full scans (Scan.lua) replace the current-listing numbers of that house when
   -- they are newer than the pack: a full scan sees every listing, so an item missing from it is
   -- not listed now. History, trend and sales stay from the pack.
-  -- A scan stores items by plain item id: it can't tell random suffixes apart. So a suffix key
-  -- ("id:bonus") the scan has no entry for reads as not listed only when the base item isn't in
-  -- the scan either; while the base item is listed, the pack's numbers for that suffix stay.
+  -- Random suffixes ("id:bonus" keys): a scan reads them from each gear listing's link and lists the
+  -- items whose every listing it could read in `suffixes` (#9). For those, a suffix the scan has no
+  -- entry for isn't listed. For other items (or scans from before 0.7.3) it can't tell suffixes
+  -- apart: a missing suffix key reads as not listed only when the base item isn't in the scan
+  -- either; while the base item is listed, the pack's numbers for that suffix stay (#1).
   local baseID = type(key) == "string" and tonumber(key:match("^(%d+):"))
   for side, sc in pairs(GW.HouseScans and GW.HouseScans() or {}) do
     if not (pack and pack.snapshotAt and pack.snapshotAt >= sc.at) then
       local s = sc.items[key]
       local d = out[side]
-      local unseen = not s and baseID and sc.items[baseID] ~= nil
+      local unseen = not s and baseID and sc.items[baseID] ~= nil and not (sc.suffixes and sc.suffixes[baseID])
       if (s or d) and not unseen then
         d = d or {}
         local mv, min, units, baitPrice, baitUnits = strsplit(",", s or "")
@@ -515,6 +517,18 @@ function GW.History(key, side)
     out[i] = n36(x)
   end
   return out, GW.pack.histFrom
+end
+
+--- How many of an item fit in one stack, from the client's item data (nil when not loaded yet).
+---@param itemID number
+---@return number|nil
+function GW.MaxStack(itemID)
+  if C_Item and C_Item.GetItemMaxStackSizeByID then
+    local n = C_Item.GetItemMaxStackSizeByID(itemID)
+    if n then return n end
+  end
+  local get = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+  return get and select(8, get(itemID)) or nil
 end
 
 --- The recent price the bait cliff rule measures against (GW.MarketStats): the lower of the item's
@@ -825,36 +839,105 @@ SlashCmdList.GOLDWRIGHT = function(raw)
   end
 end
 
---- Makes Escape close `frame` (or, when `frame.goBack()` returns true, go back one page) without UISpecialFrames: adding names to that Blizzard table taints
---- the Escape key's game-menu path on this client ("blocked from an action only available to the
---- Blizzard UI" on every Esc, 2026-11-10). The frame takes Escape itself and lets every other key
---- through. Keyboard propagation can't change in combat, so in combat Escape just passes through.
----@param frame table the window to close
+--- Makes Escape close `frame` through the game's own list of windows that Escape closes
+--- (UISpecialFrames), like the game's windows and most add-ons (Auctionator, Baganator, BetterBags,
+--- Questie, WeakAuras). The game walks that list in a protected call, so Escape closes our windows in
+--- combat too (goldwright-addon #6). Before, each window caught Escape itself, which needs
+--- SetPropagateKeyboardInput: blocked in combat, so in combat Escape went to the game (#3). The list
+--- had been dropped on 2026-11-10 for a "blocked" message on every Esc whose cause was never logged;
+--- blocked actions are logged now (below), so a repeat names the function.
+--- Only the name is added, once; an entry is only ever changed in place (GW.EscapeGoesBack).
+local escapeFrames = {}
+
+--- Where `name` is in the Escape list, if it is.
+---@param name string
+---@return number|nil
+local function escapeIndex(name)
+  for i, v in pairs(UISpecialFrames) do
+    if v == name then return i end
+  end
+end
+
+---@param frame table the window to close (needs a global name)
 function GW.CloseOnEscape(frame)
-  frame:EnableKeyboard(true)
-  frame:SetPropagateKeyboardInput(true)
-  frame:SetScript("OnKeyDown", function(self, key)
-    if InCombatLockdown() then return end
-    if key == "ESCAPE" then
-      self:SetPropagateKeyboardInput(false)
-      -- A window with pages (the Shopping tab) goes back one page first.
-      if not (self.goBack and self.goBack()) then self:Hide() end
-      C_Timer.After(0, function()
-        if not InCombatLockdown() then self:SetPropagateKeyboardInput(true) end
-      end)
-    else
-      self:SetPropagateKeyboardInput(true)
-    end
+  local name = frame:GetName()
+  if not name then return GW.Log("escape: a window without a name can't close on Escape") end
+  escapeFrames[frame] = true
+  if not escapeIndex(name) then table.insert(UISpecialFrames, name) end
+  frame:HookScript("OnHide", function()
+    if InCombatLockdown() then GW.Log("escape: %s closed in combat", name) end
   end)
 end
 
+local back -- stands in for a window on the Escape list while it shows a page Escape goes back from
+
+--- While `frame` shows a page Escape should go back from (Shopping's list page), its entry in the
+--- Escape list names a stand-in frame instead, so Escape hides only the stand-in and the window goes
+--- back a page (BetterBags does the same). The entry's value is swapped in place: the game walks the
+--- list with pairs, and changing the value of an entry it already has is safe while it does.
+---@param frame table a window passed to GW.CloseOnEscape
+---@param on boolean
+function GW.EscapeGoesBack(frame, on)
+  local name = frame:GetName()
+  if not name then return end
+  if not back then
+    back = CreateFrame("Frame", "GoldwrightEscapeBack", UIParent)
+    back:Hide()
+    back:SetScript("OnHide", function(self)
+      local target = self.target
+      if not target then return end
+      self.target = nil
+      GW.Log("escape: %s back a page", name)
+      if not (target.goBack and target.goBack()) then target:Hide() end
+    end)
+  end
+  if on then
+    local i = escapeIndex(name)
+    if i then UISpecialFrames[i] = "GoldwrightEscapeBack" end
+    back.target = frame
+    back:Show()
+    return
+  end
+  if back.target ~= frame and escapeIndex(name) then return end -- not standing in for it
+  back.target = nil
+  back:Hide()
+  local i = escapeIndex("GoldwrightEscapeBack")
+  if i then
+    UISpecialFrames[i] = name
+  elseif not escapeIndex(name) then
+    table.insert(UISpecialFrames, name)
+  end
+end
+
+-- Combat start and end, with the windows open, for bug reports (#3, #6).
+local combatLog = CreateFrame("Frame")
+pcall(combatLog.RegisterEvent, combatLog, "PLAYER_REGEN_DISABLED")
+pcall(combatLog.RegisterEvent, combatLog, "PLAYER_REGEN_ENABLED")
+combatLog:SetScript("OnEvent", function(_, event)
+  local shown = {}
+  for frame in pairs(escapeFrames) do
+    if frame:IsShown() then shown[#shown + 1] = tostring(frame:GetName()) end
+  end
+  GW.Log(
+    "combat %s (open: %s)",
+    event == "PLAYER_REGEN_DISABLED" and "starts" or "ends",
+    #shown > 0 and table.concat(shown, ", ") or "none"
+  )
+end)
+
 -- If the game blocks Goldwright from a protected action, say which one (once per session) and log it.
+-- Blocks blamed on other add-ons are logged too, without a chat line.
 local blocked = CreateFrame("Frame")
 pcall(blocked.RegisterEvent, blocked, "ADDON_ACTION_FORBIDDEN")
 pcall(blocked.RegisterEvent, blocked, "ADDON_ACTION_BLOCKED")
 blocked:SetScript("OnEvent", function(_, event, addon, fn)
-  if addon ~= ADDON_NAME then return end
-  GW.Log("%s: %s", event, tostring(fn))
+  if addon ~= ADDON_NAME then
+    -- Another add-on was blamed: only logged, so a "Interface action failed because of an
+    -- AddOn" message can be traced from a bug report (goldwright-addon #3).
+    GW.Log("%s by %s: %s (combat %s)", event, tostring(addon), tostring(fn), tostring(InCombatLockdown()))
+    return
+  end
+  GW.Log("%s: %s (combat %s)", event, tostring(fn), tostring(InCombatLockdown()))
   if not GW.blockedShown then
     GW.blockedShown = true
     GW.Print(L["the game blocked %s (%s). Please report this."], tostring(fn), event)

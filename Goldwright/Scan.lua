@@ -44,12 +44,18 @@ local GREY = UI.GREY
 ---@field index number? next row to read
 ---@field first number? first row index (0 on Forever, 1 if the client is 1-based)
 ---@field last number? last row index
----@field agg table<number, table<number, number>>? itemID -> unit price -> quantity; nil once saved
+---@field agg table<number|string, table<number, number>>? itemID or suffix key ("id:bonus") -> unit price -> quantity; nil once saved
 ---@field itemCount number? distinct items seen so far
 ---@field skipped number? rows skipped (bid-only or no item id)
----@field keys number[]? item ids to price
+---@field keys (number|string)[]? item ids and suffix keys to price
 ---@field ki number? next index into keys
----@field out table<number, string>? itemID -> packed stats string, as stored in GoldwrightScans
+---@field out table<number|string, string>? itemID or suffix key -> packed stats string, as stored in GoldwrightScans
+---@field gear table<number, boolean>? itemID -> can carry a random suffix
+---@field suffixed table<number, boolean>? items with at least one listing read by suffix
+---@field noLink table<number, boolean>? items with a listing whose link couldn't be read
+---@field matched table<number, boolean>? items with a scanned suffix key the data pack also has
+---@field suffixRows number? listings read by suffix
+---@field suffixes table<number, boolean>? items whose every suffix the scan could tell apart (#9)
 local run -- nil when idle
 local view -- the Scan tab
 
@@ -221,7 +227,7 @@ priceStep = guarded(function()
   -- done: store, and let tooltips and the Sell panel use it right away (SCAN-3)
   local d = db()
   local h = GW.House()
-  d.houses[h.packKey .. ":" .. r.side] = { at = r.dataAt, total = r.total, items = r.out }
+  d.houses[h.packKey .. ":" .. r.side] = { at = r.dataAt, total = r.total, items = r.out, suffixes = r.suffixes }
   table.insert(d.history, 1, {
     at = r.dataAt,
     total = r.total,
@@ -238,8 +244,52 @@ priceStep = guarded(function()
   if GW.WatchIfNew then GW.WatchIfNew() end -- watched shopping lists: anything below max now?
 end)
 
+local getInstant = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+local getLink -- C_AuctionHouse.GetReplicateItemLink, read when a scan's data arrives
+local packItems -- the data pack's items, to check suffix keys against
+
+--- Whether an item can carry a random suffix: weapons and armour (true when the client can't tell).
+--- Remembered per item for the scan.
+---@param r ScanRun
+---@param itemID number
+---@return boolean
+local function mayHaveSuffix(r, itemID)
+  local g = r.gear[itemID]
+  if g == nil then
+    local classID = getInstant and select(6, getInstant(itemID))
+    g = classID == nil or classID == 2 or classID == 4
+    r.gear[itemID] = g
+  end
+  return g
+end
+
+--- The suffix key of a listing's item link, as the data pack keys suffixes ("id:bonus", bonus ids
+--- sorted), or nil when the link carries no bonus id (goldwright-addon #9).
+---@param link string|nil
+---@param itemID number
+---@return string|nil key
+local function suffixKey(link, itemID)
+  local body = type(link) == "string" and link:match("item:([%-%d:]+)")
+  if not body then return nil end
+  local f, n = {}, 0
+  for x in (body .. ":"):gmatch("([^:]*):") do
+    n = n + 1
+    f[n] = tonumber(x) or 0
+  end
+  if f[1] ~= itemID then return nil end
+  local bonus = {}
+  for b = 1, f[13] or 0 do
+    local v = f[13 + b]
+    if v and v > 0 then bonus[#bonus + 1] = v end
+  end
+  if #bonus == 0 then return nil end
+  table.sort(bonus)
+  return itemID .. ":" .. table.concat(bonus, ":")
+end
+
 --- Reading phase: adds up quantity per item and unit price, ROWS_PER_TICK rows per frame, then starts
---- the pricing phase.
+--- the pricing phase. Gear listings are also added up per suffix ("id:bonus"), read from each
+--- listing's link: the item id alone can't tell "of the Bear" from "of the Eagle" (#9).
 local readStep
 readStep = guarded(function()
   local r = run
@@ -257,6 +307,25 @@ readStep = guarded(function()
         r.itemCount = r.itemCount + 1
       end
       m[unit] = (m[unit] or 0) + count
+      if getLink and mayHaveSuffix(r, itemID) then
+        local link = getLink(i)
+        local k = suffixKey(link, itemID)
+        if k then
+          local sm = agg[k]
+          if not sm then
+            sm = {}
+            agg[k] = sm
+            -- The data pack keys this suffix the same way: proof the link's bonus ids are the ones
+            -- the pack and tooltips use, not some other form.
+            if packItems and packItems[k] then r.matched[itemID] = true end
+          end
+          sm[unit] = (sm[unit] or 0) + count
+          r.suffixed[itemID] = true
+          r.suffixRows = r.suffixRows + 1
+        elseif not link then
+          r.noLink[itemID] = true -- this item's suffixes can't all be told apart
+        end
+      end
     else
       r.skipped = r.skipped + 1 -- bid-only or no item id
     end
@@ -267,6 +336,18 @@ readStep = guarded(function()
     C_Timer.After(0, readStep)
     return
   end
+  -- Items whose every listing had a readable link, with at least one suffix keyed like the data
+  -- pack: the scan saw each of their suffixes, so a suffix it didn't see isn't listed (Core.lua
+  -- GW.ItemData). Anything less and the item works as before #9.
+  r.suffixes = {}
+  local families = 0
+  for id in pairs(r.suffixed) do
+    if not r.noLink[id] and r.matched[id] then
+      r.suffixes[id] = true
+      families = families + 1
+    end
+  end
+  GW.Log("scan: %d suffix listings in %d items", r.suffixRows, families)
   r.phase = "pricing"
   r.keys, r.ki, r.out = {}, 1, {}
   for id in pairs(agg) do
@@ -297,6 +378,9 @@ local function onData()
   r.first = r.index
   r.last = r.index + total - 1
   r.agg, r.itemCount, r.skipped = {}, 0, 0
+  r.gear, r.suffixed, r.noLink, r.matched, r.suffixRows = {}, {}, {}, {}, 0
+  getLink = C_AuctionHouse.GetReplicateItemLink
+  packItems = GW.pack and GW.pack.items
   r.phase = "reading"
   if render then render() end
   C_Timer.After(0, readStep)

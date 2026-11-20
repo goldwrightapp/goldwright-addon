@@ -233,7 +233,7 @@ local function scanBags()
   end)
   for _, g in ipairs(list) do
     local here = packFor(g.itemID)
-    g.unit = here and here.min and GW.UndercutPrice(here.min, nil, not g.isCommodity) or nil
+    g.unit = here and here.min and GW.UndercutPrice(here.min) or nil
     g.total = g.unit and g.unit * g.count or 0
   end
   -- Sort by value when the panel opens, then keep that order while it stays open: posting part of
@@ -362,15 +362,9 @@ local function setOwnPrice(c)
   panel.why:SetText(L["Your own price."])
 end
 
---- The price that will be posted: what's in the box, rounded down to whole silver for gear
---- (gear posts in whole silver only).
+--- The price that will be posted: what's in the box, copper included for items too (#8).
 ---@return number unit copper per item
----@return boolean rounded true when the box had copper that gear can't post
-local function postUnit()
-  local g, unit = state.sel, getUnitPrice()
-  if g and not g.isCommodity and unit > 0 then return GW.SilverFloor(unit), unit % 100 ~= 0 end
-  return unit, false
-end
+local function postUnit() return getUnitPrice() end
 
 --- The quantity to post: commodities post any quantity in one listing (from the box, capped at what
 --- you have); other items post one auction per click.
@@ -406,7 +400,7 @@ end
 local function recalc()
   local g = state.sel
   if not g then return end
-  local qty, unit, rounded = quantity(), postUnit()
+  local qty, unit = quantity(), postUnit()
 
   -- strategy buttons show what you'd receive at the current quantity
   for _, b in ipairs(panel.stratButtons) do
@@ -480,10 +474,6 @@ local function recalc()
       string.format(L["A vendor pays %s each, more than you'd net here. Sell to a vendor instead."], GW.Money(vendor)),
       GW.SIGNAL_ORANGE
   end
-  if rounded then
-    warn, warnColor =
-      string.format(L["Gear posts in whole silver: this posts at %s."], GW.Money(unit)) .. " " .. warn, GW.SIGNAL_ORANGE
-  end
   if tooSlow and warn == "" then
     warn, warnColor =
       string.format(
@@ -524,16 +514,9 @@ local function computePrices()
     state.prices = nil
     return
   end
-  local silver = not g.isCommodity -- gear: whole silver only
-  local fast = GW.UndercutPrice(cheapest, own, silver)
+  local fast = GW.UndercutPrice(cheapest, own)
   local typ = math.max(fast, (typical or cheapest) - 1)
   local patient = math.max(typ + 1, math.floor((typical or cheapest) * PATIENT_MARKUP + 0.5))
-  if silver then
-    -- 1c under typical doesn't exist for gear: Typical is the typical price itself (whole silver),
-    -- Patient rounds up, so the three buttons are three different prices (2s / 3s / 4s on a 3s wall).
-    typ = math.max(fast, GW.SilverFloor(typical or cheapest))
-    patient = math.max(typ + 100, math.ceil((typical or cheapest) * PATIENT_MARKUP / 100) * 100)
-  end
   state.prices =
     { fast = fast, typical = typ, patient = patient, cheapest = cheapest, typicalPrice = typical, own = own }
 end
@@ -578,8 +561,8 @@ local function applyDefaultStrategy()
         GW.Money(s.baitPrice)
       ))
     or ""
-  -- Judge the price Sell fast would post (for gear that's a whole silver under, e.g. 2s on a 3s wall),
-  -- not the cheapest listing, and never default to netting less than a vendor pays.
+  -- Judge the price Sell fast would post, not the cheapest listing, and never default to netting
+  -- less than a vendor pays.
   local vendor = GW.VendorPrice(state.sel.itemID)
   local fastBelowVendor = vendor > 0 and GW.Net(sellSide(), P.fast) <= vendor and GW.Net(sellSide(), P.typical) > vendor
   if P.own then
@@ -602,7 +585,7 @@ local function applyDefaultStrategy()
         .. bait
     )
   else
-    chooseStrategy("fast", loading .. GW.SellFastText(not state.sel.isCommodity, GW.Money(P.cheapest)) .. bait)
+    chooseStrategy("fast", loading .. GW.SellFastText(GW.Money(P.cheapest)) .. bait)
   end
 end
 
@@ -691,12 +674,17 @@ function GW.CollectSearchResults(itemID, itemKey)
     end
   end
   if #list > 0 then return list, "commodity", nc, 0 end
+  -- Item (non-commodity) results group identical auctions into one row: `quantity` is how many
+  -- there are and `buyoutAmount` the price of each, not of the row (goldwright-addon #5: dividing
+  -- by the count turned 31 Expert Cookbooks at 94s 99c into "3s 6c each"). Only an item that
+  -- stacks would carry a whole-stack buyout; on this auction house those are commodities.
   local ni = itemKey and (C_AuctionHouse.GetNumItemSearchResults(itemKey) or 0) or 0
+  local stacks = GW.MaxStack and (GW.MaxStack(itemKey.itemID) or 1) > 1
   for i = 1, ni do
     local r = C_AuctionHouse.GetItemSearchResultInfo(itemKey, i)
     if r and r.buyoutAmount and (r.quantity or 0) > 0 then
-      list[#list + 1] =
-        { price = math.floor(r.buyoutAmount / r.quantity + 0.5), qty = r.quantity, own = r.containsOwnerItem }
+      local each = stacks and math.floor(r.buyoutAmount / r.quantity + 0.5) or r.buyoutAmount
+      list[#list + 1] = { price = each, qty = r.quantity, own = r.containsOwnerItem }
     end
   end
   return list, #list > 0 and "item" or nil, nc, ni
@@ -1360,10 +1348,8 @@ local function createPanel()
     b.receive:SetPoint("TOP", b, "BOTTOM", 0, -2)
     b:SetScript("OnClick", function()
       local reasons = {
-        fast = GW.SellFastText(state.sel and not state.sel.isCommodity),
-        typical = (state.sel and not state.sel.isCommodity)
-            and L["Typical: at the typical price (gear posts in whole silver)."]
-          or L["Typical: 1c under the typical price."],
+        fast = GW.SellFastText(),
+        typical = L["Typical: 1c under the typical price."],
         patient = L["Patient: about 10% above the typical price; best posted when supply is low."],
       }
       chooseStrategy(st.key, reasons[st.key])

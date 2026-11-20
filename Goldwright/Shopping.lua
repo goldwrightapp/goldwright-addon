@@ -1902,7 +1902,8 @@ local function buildListPage(p)
 end
 
 --- Builds the Shopping tab inside `parent`: page 1 (your lists) and page 2 (one list). Esc and the
---- controller's B on page 2 go back to page 1 first (the window's goBack, Core.lua / Gamepad.lua).
+--- controller's B on page 2 go back to page 1 first (the window's goBack; Esc through
+--- GW.EscapeGoesBack in Core.lua, B through Gamepad.lua).
 ---@param parent table tab content frame
 local function build(parent)
   view = CreateFrame("Frame", nil, parent)
@@ -1927,6 +1928,14 @@ local function build(parent)
       end
       return before and before() or false
     end
+    -- While page 2 is on screen, Escape goes back a page instead of closing the window. Hooked on
+    -- the window and the tab too: each change of what's on screen re-checks.
+    local function sync() GW.EscapeGoesBack(win, view:IsVisible() and view.listPage:IsShown()) end
+    for _, f in ipairs({ win, view, view.listPage }) do
+      f:HookScript("OnShow", sync)
+      f:HookScript("OnHide", sync)
+    end
+    sync()
   end
 end
 

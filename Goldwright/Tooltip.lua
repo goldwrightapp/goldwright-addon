@@ -149,7 +149,7 @@ local function itemModel(link, fallbackID)
   end
   local info = cachedInfo(id)
   -- The name as the client shows it (sales are recorded by name, from the invoices).
-  local name = link and link:match("|h%[(.-)%]|h")
+  local name = link and link:match("|h%[(.-)%]|h") or (info and info.name)
   m = { id = id, key = key, data = data, anySuffix = anySuffix, info = info, name = name }
   -- Not in the client's item cache yet: ask again next hover rather than remembering "no vendor price".
   if info or not (C_Item and C_Item.IsItemDataCachedByID) then
@@ -191,8 +191,11 @@ local NO_AH = { [1] = true, [4] = true, [7] = true, [8] = true }
 ---@param tipData table|nil tooltip data from TooltipDataProcessor (with `lines`)
 ---@param m GoldwrightTooltipModel
 ---@return boolean
-local function notTradeable(tt, tipData, m)
+local function notTradeable(tt, tipData, m, product)
   if m.info and NO_AH[m.info.bindType or 0] then return true end
+  -- A recipe's tooltip shows the crafted item below it, binding line included: that one isn't the
+  -- recipe's (goldwright-addon #7).
+  if product then return false end
   local lines = tipData and tipData.lines
   if lines then
     for i = 1, math.min(#lines, 8) do
@@ -447,12 +450,13 @@ end
 ---@param link string|nil item link
 ---@param itemID number item id
 ---@param tipData table|nil tooltip data from TooltipDataProcessor
-local function addTooltipLines(tt, link, itemID, tipData)
+---@param product number|nil on a recipe's tooltip, the id of the item it makes
+local function addTooltipLines(tt, link, itemID, tipData, product)
   local m = itemModel(link, itemID)
   if not m then return end
   local h = GW.House()
   -- soulbound and other items that can't be sold at the auction house: the vendor line only
-  if notTradeable(tt, tipData, m) then
+  if notTradeable(tt, tipData, m, product) then
     local vendor = m.info and m.info.vendor or 0
     if vendor > 0 and GW.Opt("ttVendor") then
       addPair(tt, L["Goldwright: vendor pays"], string.format(L["%s each"], GW.Money(vendor)), GREY)
@@ -468,13 +472,24 @@ end
 ---@param data table|nil tooltip data (nil on clients without TooltipDataProcessor)
 local function onItemTooltip(tt, data)
   if tt ~= GameTooltip and tt ~= ItemRefTooltip then return end
-  local link, id
-  if tt.GetItem then link = select(2, tt:GetItem()) end
+  local link, id, shownID
+  if tt.GetItem then
+    local _
+    _, link, shownID = tt:GetItem()
+  end
   if not link and data then link = data.hyperlink end
-  id = data and data.id
-  if not id and link then id = tonumber(link:match("item:(%d+)")) end
+  id = (data and data.id) or shownID
+  local linkID = link and tonumber(link:match("item:(%d+)"))
+  if not id then id = linkID end
   if not id then return end
-  local ok, err = pcall(addTooltipLines, tt, link, id, data)
+  -- A recipe's tooltip comes with the crafted item's link but the recipe's id: the id is what the
+  -- tooltip is for (Blueprint: Repair Bot showed the Repair Bot's price, goldwright-addon #7).
+  -- Recipes have no suffixes, so the id alone finds them.
+  local product
+  if linkID and linkID ~= id then
+    product, link = linkID, nil
+  end
+  local ok, err = pcall(addTooltipLines, tt, link, id, data, product)
   if not ok and not GW.tooltipErrorShown then
     GW.tooltipErrorShown = true
     GW.Print("tooltip error (shown once): %s", tostring(err))

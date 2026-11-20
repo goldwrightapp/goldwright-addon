@@ -3,13 +3,9 @@
 local _, GW = ...
 local L = GW.L
 
---- Rounds a gear buyout down to whole silver, at least 1s. Gear (non-commodity) auctions only
---- take whole silver: the server answers a buyout with copper in it with "Internal auction error"
---- (seen in game 2026-11-10; all 111,406 item buyouts in a US snapshot are whole silver).
---- Commodities take any copper price.
----@param copper number price in copper
----@return number copper whole silver, at least 100
-function GW.SilverFloor(copper) return math.max(100, math.floor(copper / 100) * 100) end
+-- Items (gear, books, recipes...) post with copper like commodities. Until mid-November 2026 Forever
+-- answered an item buyout with copper with "Internal auction error" and Goldwright rounded item
+-- prices down to whole silver; by 2026-11-20 most item buyouts had copper (goldwright-addon #8).
 
 --- Hours of the Sell tab's auction durations (index = its duration setting: 2h, 8h, 24h).
 GW.DURATION_HOURS = { 2, 8, 24 }
@@ -45,9 +41,8 @@ end
 --- Matching your own cheapest listing never undercuts yourself.
 ---@param cheapest number|nil cheapest real unit price in copper
 ---@param own boolean|nil the cheapest listing is the player's own
----@param wholeSilver boolean|nil gear: undercut by 1s, not 1c, and post whole silver
 ---@return number|nil copper nil without a cheapest price
-function GW.UndercutPrice(cheapest, own, wholeSilver)
+function GW.UndercutPrice(cheapest, own)
   if not cheapest or cheapest <= 0 then return nil end
   local rule = GW.Opt("undercut")
   local p
@@ -58,44 +53,33 @@ function GW.UndercutPrice(cheapest, own, wholeSilver)
   else
     p = math.max(1, cheapest - 1)
   end
-  if wholeSilver then
-    if p < cheapest then return GW.SilverFloor(p) end -- the next whole silver below
-    return GW.SilverFloor(cheapest)
-  end
   return p
 end
 
---- One phrase explaining the undercut rule: "1c under", "1s under" for gear, "matching" or "5% under".
----@param wholeSilver boolean|nil gear
+--- One phrase explaining the undercut rule: "1c under", "matching" or "5% under".
 ---@return string text
-function GW.UndercutText(wholeSilver)
+function GW.UndercutText()
   local rule = GW.Opt("undercut")
   if rule == "match" then return L["matching"] end
   if rule == "pct" then return string.format(L["%s%% under"], GW.Opt("undercutPct")) end
-  return wholeSilver and L["1s under"] or L["1c under"]
+  return L["1c under"]
 end
 
 --- The Sell Fast reason as one whole sentence per undercut rule (a translation can't build it from
 --- the phrase above): "Sell Fast: 1c under the cheapest listing (74c)."
----@param wholeSilver boolean|nil gear
 ---@param cheapest string|nil the cheapest listing as money text; nil leaves the price out
 ---@return string text
-function GW.SellFastText(wholeSilver, cheapest)
+function GW.SellFastText(cheapest)
   local rule = GW.Opt("undercut")
   local pct = GW.Opt("undercutPct")
   if cheapest then
     if rule == "match" then return string.format(L["Sell Fast: matching the cheapest listing (%s)."], cheapest) end
     if rule == "pct" then return string.format(L["Sell Fast: %s%% under the cheapest listing (%s)."], pct, cheapest) end
-    return string.format(
-      wholeSilver and L["Sell Fast: 1s under the cheapest listing (%s)."]
-        or L["Sell Fast: 1c under the cheapest listing (%s)."],
-      cheapest
-    )
+    return string.format(L["Sell Fast: 1c under the cheapest listing (%s)."], cheapest)
   end
   if rule == "match" then return L["Sell Fast: matching the cheapest listing."] end
   if rule == "pct" then return string.format(L["Sell Fast: %s%% under the cheapest listing."], pct) end
-  return wholeSilver and L["Sell Fast: 1s under the cheapest listing."]
-    or L["Sell Fast: 1c under the cheapest listing."]
+  return L["Sell Fast: 1c under the cheapest listing."]
 end
 
 --- SELL-7 / SELL-8: how a unit price compares with normal. The kind is "below" (under the warning

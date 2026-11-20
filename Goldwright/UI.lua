@@ -74,7 +74,17 @@ function UI.NewButton(parent) return UI.Skin("button", CreateFrame("Button", nil
 --- A button that works as a tab or a toggle (UI.SetSelected shows which one is chosen).
 function UI.NewTabButton(parent) return UI.Skin("tab", CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")) end
 function UI.NewEditBox(parent) return UI.Skin("editbox", CreateFrame("EditBox", nil, parent, "InputBoxTemplate")) end
-function UI.NewCloseButton(parent) return UI.Skin("close", CreateFrame("Button", nil, parent, "UIPanelCloseButton")) end
+--- A red X button. It hides its parent itself: the template's own click goes through the game's
+--- panel manager (HideUIPanel), which add-on code can't use in combat, so the X did nothing until
+--- combat ended and the game said "Interface action failed because of an AddOn" (#3). Callers can
+--- still set their own OnClick.
+---@param parent table
+---@return table button
+function UI.NewCloseButton(parent)
+  local b = UI.Skin("close", CreateFrame("Button", nil, parent, "UIPanelCloseButton"))
+  b:SetScript("OnClick", function() parent:Hide() end)
+  return b
+end
 function UI.NewCheckButton(parent)
   return UI.Skin("check", CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate"))
 end
@@ -163,8 +173,7 @@ end
 ---@field movable? boolean drag with the left mouse button
 
 --- A framed window on UIParent (ButtonFrameTemplate) without portrait or button bar, closed by
---- Escape through GW.CloseOnEscape (never UISpecialFrames: that taints the game menu). The caller
---- places it.
+--- Escape through GW.CloseOnEscape (the game's Escape list, so in combat too). The caller places it.
 ---@param name string global frame name
 ---@param width number in pixels
 ---@param height number in pixels
@@ -191,6 +200,10 @@ function UI.Window(name, width, height, opts)
   -- game's own windows); a new window opens in front.
   f:SetToplevel(true)
   f:HookScript("OnShow", function(self) self:Raise() end)
+  -- The template's X hides the window itself, never through HideUIPanel (blocked in combat; see
+  -- UI.NewCloseButton).
+  local close = f.CloseButton or (name and _G[name .. "CloseButton"])
+  if close then close:SetScript("OnClick", function() f:Hide() end) end
   GW.CloseOnEscape(f)
   -- In the game's controller mode the window joins its window list (Gamepad.lua).
   if GW.Gamepad then GW.Gamepad.Add(f) end
