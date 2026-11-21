@@ -218,7 +218,7 @@ local function build(parent)
   view.periodButtons = {}
   local prev
   for i, days in ipairs(PERIODS) do
-    local b = UI.TabButton(view, GW.Plural(days, "%d day", "%d days"), 80, 22, function()
+    local b = UI.ToggleButton(view, GW.Plural(days, "%d day", "%d days"), 80, 22, function()
       period = days
       render()
     end)

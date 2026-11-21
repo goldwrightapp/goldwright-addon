@@ -585,6 +585,26 @@ function GW.LedgerTooltipInfo(name)
   return byName[name]
 end
 
+--- Your sales of one item at one house, per day (UTC midnight -> units and money before the cut),
+--- for the Sell tab's price history. A sale's time is when its mail was read, so it is right to
+--- the day at best. Sales whose house is unknown count for every house.
+---@param name string|nil item name (the client's language)
+---@param house string "A", "H" or "N"
+---@return table<number, { qty: number, money: number }>
+function GW.LedgerSalesByDay(name, house)
+  local out = {}
+  if not name then return out end
+  for _, e in ipairs(GW.LedgerEvents(nil)) do
+    if e.kind == "sold" and e.item == name and (e.house == nil or e.house == house) then
+      local day = e.t - e.t % 86400
+      local x = out[day] or { qty = 0, money = 0 }
+      x.qty, x.money = x.qty + e.qty, x.money + (e.money or 0)
+      out[day] = x
+    end
+  end
+  return out
+end
+
 --- Monthly totals of events older than LEDGER_DAYS, newest month first.
 ---@return { month: string, sold: number, net: number, bought: number, spent: number, unsold: number }[]
 function GW.LedgerMonths()

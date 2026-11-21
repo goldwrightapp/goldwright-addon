@@ -10,7 +10,8 @@ local L = GW.L
 --- Hours of the Sell tab's auction durations (index = its duration setting: 2h, 8h, 24h).
 GW.DURATION_HOURS = { 2, 8, 24 }
 
---- About how long until a listing at `price` sells: everything listed at or below that price
+--- About how long until a listing at `price` sells (the Sell tab's "may not all sell within the
+--- auction" warning): everything listed at or below that price
 --- (other players' listings; same-price ones count as ahead, to be safe) plus your own quantity,
 --- at the house's sales per day.
 ---@param listings GoldwrightListing[]|nil the live listings ({price, qty, own})
@@ -26,15 +27,6 @@ function GW.TimeToSell(listings, price, qty, perDay)
     if not l.own and l.price and l.price <= price then ahead = ahead + (l.qty or 0) end
   end
   return (ahead + (qty or 1)) / perDay * 24, ahead
-end
-
---- "under an hour", "about 5 h", "about 2.5 days".
----@param hours number
----@return string
-function GW.TimeToSellText(hours)
-  if hours < 1 then return L["under an hour"] end
-  if hours < 36 then return string.format(L["about %d h"], math.floor(hours + 0.5)) end
-  return string.format(L["about %s days"], GW.Decimal(math.floor(hours / 24 * 10 + 0.5) / 10))
 end
 
 --- SELL-4: the price to post against the cheapest real listing, per the undercut setting.
@@ -65,21 +57,21 @@ function GW.UndercutText()
   return L["1c under"]
 end
 
---- The Sell Fast reason as one whole sentence per undercut rule (a translation can't build it from
---- the phrase above): "Sell Fast: 1c under the cheapest listing (74c)."
+--- The Fast reason as one whole sentence per undercut rule (a translation can't build it from the
+--- phrase above): "Fast: matching the cheapest listing (74c)."
 ---@param cheapest string|nil the cheapest listing as money text; nil leaves the price out
 ---@return string text
-function GW.SellFastText(cheapest)
+function GW.FastText(cheapest)
   local rule = GW.Opt("undercut")
   local pct = GW.Opt("undercutPct")
   if cheapest then
-    if rule == "match" then return string.format(L["Sell Fast: matching the cheapest listing (%s)."], cheapest) end
-    if rule == "pct" then return string.format(L["Sell Fast: %s%% under the cheapest listing (%s)."], pct, cheapest) end
-    return string.format(L["Sell Fast: 1c under the cheapest listing (%s)."], cheapest)
+    if rule == "match" then return string.format(L["Fast: matching the cheapest listing (%s)."], cheapest) end
+    if rule == "pct" then return string.format(L["Fast: %s%% under the cheapest listing (%s)."], pct, cheapest) end
+    return string.format(L["Fast: 1c under the cheapest listing (%s)."], cheapest)
   end
-  if rule == "match" then return L["Sell Fast: matching the cheapest listing."] end
-  if rule == "pct" then return string.format(L["Sell Fast: %s%% under the cheapest listing."], pct) end
-  return L["Sell Fast: 1c under the cheapest listing."]
+  if rule == "match" then return L["Fast: matching the cheapest listing."] end
+  if rule == "pct" then return string.format(L["Fast: %s%% under the cheapest listing."], pct) end
+  return L["Fast: 1c under the cheapest listing."]
 end
 
 --- SELL-7 / SELL-8: how a unit price compares with normal. The kind is "below" (under the warning

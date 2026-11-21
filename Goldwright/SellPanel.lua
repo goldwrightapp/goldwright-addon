@@ -1,16 +1,23 @@
 --- The Goldwright panel beside the auction house: the window, its tab bar (Sell, My Auctions, Shopping,
---- Scan) and the Sell tab (SELL-1..18), layout B: 1 Choose (bags) -> 2 Market (stats, listings, charts)
---- -> 3 Your listing (strategies, price, receipt, Post). One listing per click (or key press), then the
---- next item is selected and searched (post queue, SELL-13). Rules without UI live in Selling.lua.
+--- Scan), the status bar, and the Sell tab (SELL-1..18) in the wide layout (#12): "Your bags" on the
+--- left; on the right the market card (the item with Lowest now / Normal, last 7 days / Sold per
+--- day, one chart with a History / Best time to post switch, Cheapest listings) and the listing card
+--- (Fast / Patient, price, quantity, duration, what you get, Post). One listing per
+--- click (or key press), then the next item is selected and searched (post queue, SELL-13). Rules
+--- without UI live in Selling.lua; colours come from the look (UI.Tokens, Skin.lua).
 local _, GW = ...
 local L = GW.L
 
-local W, H = 1000, 560
-local ROWS, ROW_H = 13, 30
+local W, H = 1000, 590
+local ROWS, ROW_H = 11, 38 -- bag list
+local LADDER_ROWS, LADDER_H = 10, 18 -- cheapest listings
+local BAGS_W = 252 -- the bags card
+local MARKET_H = 300 -- the market card; the listing card takes the rest
 local DURATIONS = { { idx = 1, label = L["2h"] }, { idx = 2, label = L["8h"] }, { idx = 3, label = L["24h"] } }
+--- The two strategies (#15). Fast posts at the undercut setting's price (default: match the cheapest
+--- listing; same-price listings sell newest first); Patient about 10% above the market price.
 local STRATEGIES = {
-  { key = "fast", label = L["Sell Fast"] },
-  { key = "typical", label = L["Typical"] },
+  { key = "fast", label = L["Fast"] },
   { key = "patient", label = L["Patient"] },
 }
 local TABS = {
@@ -19,30 +26,38 @@ local TABS = {
   { key = "shopping", label = L["Shopping"] },
   { key = "scan", label = L["Scan"] },
 }
-local PATIENT_MARKUP = 1.10 -- Patient = ~10% above typical (rule to tune)
-local FAST_OK_RATIO = 0.85 -- default to "Sell fast" only if it isn't >15% under typical
+local PATIENT_MARKUP = 1.10 -- Patient = ~10% above the market price (rule to tune)
+local FAST_OK_RATIO = 0.85 -- default to Fast only if it isn't >15% under the market price
 local POST_TIMEOUT = 10 -- seconds to wait for the auction house to confirm a post
 
---- The market check line under the price (SELL-7 / SELL-8), by price check kind: against the 7-day
---- normal, else the typical price. "at" takes the reference price; the rest the percent, then it.
+--- The warning when a price is far from normal (SELL-7 / SELL-8): against the 7-day normal, else
+--- the market price. Takes the percent, then the reference price. Prices close to normal get no
+--- warning: the box only shows when something needs attention.
+local FAR_ABOVE = 900 -- % above: from here (10x) the warning says "more than 10x", not a huge percent
+-- The most one listing can total: what a character can hold (9,999,999g 99s 99c). Above it nobody
+-- could buy it, so Post is off and "You get" shows a dash.
+local MAX_LISTING = 99999999999
+local YOU_GET_FONT, YOU_GET_SMALL = "GameFontNormalHuge", "GameFontNormalLarge" -- "You get": big, or when too wide
 local PRICE_CHECK = {
   normal = {
-    below = L["%d%% below normal (%s): you may be giving it away."],
-    above = L["%d%% above normal (%s): unlikely to sell quickly."],
-    at = L["Right at normal (%s)."],
-    under = L["%d%% under normal (%s): a normal undercut."],
-    over = L["%d%% over normal (%s): may take longer to sell."],
+    below = L["%d%% below its normal price (%s): you may be giving it away."],
+    above = L["%d%% above its normal price (%s): this may take a while to sell."],
+    farAbove = L["More than 10× its normal price (%s): this may take a while to sell."],
   },
-  typical = {
-    below = L["%d%% below the typical price (%s): you may be giving it away."],
-    above = L["%d%% above the typical price (%s): unlikely to sell quickly."],
-    at = L["Right at the typical price (%s)."],
-    under = L["%d%% under the typical price (%s): a normal undercut."],
-    over = L["%d%% over the typical price (%s): may take longer to sell."],
+  market = {
+    below = L["%d%% below the market price (%s): you may be giving it away."],
+    above = L["%d%% above the market price (%s): this may take a while to sell."],
+    farAbove = L["More than 10× the market price (%s): this may take a while to sell."],
   },
 }
 
---- A bag item (all stacks of one item id) in the Choose column.
+--- What each strategy does: under its button while chosen, and in its tooltip.
+local REASONS = {
+  fast = function() return GW.FastText() end,
+  patient = function() return L["Patient: about 10% above the market price; best posted when supply is low."] end,
+}
+
+--- A bag item (all stacks of one item id) in the bag list.
 ---@class SellBagItem
 ---@field itemID number
 ---@field count number how many you have in your bags
@@ -54,16 +69,15 @@ local PRICE_CHECK = {
 ---@field hidden boolean? hidden with right-click (GoldwrightDB.ignore)
 ---@field name string
 ---@field isCommodity boolean commodities post any quantity in one listing; other items one per click
----@field unit number? price Sell Fast would post at, from the data pack
+---@field unit number? price Fast would post at, from the data pack (per item, #5)
 ---@field total number unit * count, for sorting and the footer (0 without price data)
 
 --- Strategy prices for the selected item.
 ---@class SellPrices
----@field fast number Sell Fast price
----@field typical number Typical price
+---@field fast number Fast price
 ---@field patient number Patient price
 ---@field cheapest number cheapest real listing
----@field typicalPrice number? the market's typical price
+---@field marketPrice number? the market price itself
 ---@field own boolean? the cheapest real listing is yours
 
 --- A post sent to the auction house and not yet confirmed.
@@ -96,12 +110,12 @@ local panel -- the frame, created on first use
 
 --- State of the Sell tab.
 ---@class SellState
----@field bags SellBagItem[] the Choose column, in display order
+---@field bags SellBagItem[] the bag list, in display order
 ---@field offset number scroll offset into bags
 ---@field sel SellBagItem? the selected item
 ---@field stats table? market stats from the live search (GW.MarketStats)
 ---@field duration number duration index (1 = 2h, 2 = 8h, 3 = 24h)
----@field strategy string? "fast", "typical" or "patient"; nil for a price you typed
+---@field strategy string? "fast" or "patient"; nil for a price you typed
 ---@field typed boolean? the player typed the price: later results never replace it
 ---@field prices SellPrices?
 ---@field showHidden boolean? show hidden items in the list
@@ -114,15 +128,23 @@ local panel -- the frame, created on first use
 ---@field pending SellPendingPost? the post waiting for an answer
 ---@field recent SellPendingPost? the last post, kept a while so a late success still moves the queue on
 ---@field advance SellAdvance? set after a successful post until the next item is selected
-local state = { bags = {}, offset = 0, sel = nil, stats = nil, duration = 3, strategy = nil, prices = nil }
+local state = { bags = {}, offset = 0, sel = nil, stats = nil, duration = 3, strategy = nil, prices = nil, live = {} }
 GW.activeTab = "sell"
 
 ---------------------------------------------------------------------------
 -- helpers
 ---------------------------------------------------------------------------
 local UI = GW.UI
-local fs, setColor, qualityColor = UI.FontString, UI.SetColor, UI.QualityColor
-local GREY, WHITE = UI.GREY, UI.WHITE
+local setColor, qualityColor = UI.SetColor, UI.QualityColor
+local T -- the look's colours (UI.Tokens), set when the panel is built
+
+--- A colour escape ("|cffrrggbb") for an {r, g, b} colour.
+---@param c number[]
+---@return string
+local function hex(c)
+  local function b(v) return math.floor(v * 255 + 0.5) end
+  return string.format("|cff%02x%02x%02x", b(c[1]), b(c[2]), b(c[3]))
+end
 
 --- The house you are selling at: the open auction house (Blackwater in neutral towns, else your
 --- faction's; GW.AuctionSide in Scan.lua). Reference prices, the cut and hints all follow it.
@@ -143,6 +165,11 @@ local function packFor(itemID)
   local here = d and d[sellSide()]
   return here and here.mv and here or nil, d
 end
+
+--- The normal price the Sell tab compares with: the 7-day average, else the 30-day one.
+---@param here table|nil the selling house's entry
+---@return number|nil
+local function normalPrice(here) return here and (here.avg7 or here.avg30) end
 
 --- The other house you can reach when it really pays more (GW.BetterHouse): Blackwater from your
 --- faction's house, your faction's house from Blackwater.
@@ -168,7 +195,7 @@ local function itemCount(itemID)
   return GetItemCount and GetItemCount(itemID) or 0
 end
 
---- Shows a short message above the Post button.
+--- Shows a short message about posting in the listing card.
 ---@param text string
 ---@param color number[]? {r, g, b}
 local function toast(text, color) UI.Toast(panel, text, color) end
@@ -178,8 +205,17 @@ local function toast(text, color) UI.Toast(panel, text, color) end
 ---@return boolean|nil
 local function ignored(itemID) return GoldwrightDB.ignore and GoldwrightDB.ignore[itemID] end
 
+--- "~140" items sold per day (one decimal under 10), "–" when unknown.
+---@param here table|nil
+---@return string
+local function perDayText(here)
+  local n = GW.SellRate(here)
+  if not n then return "–" end
+  return "~" .. (n >= 10 and GW.Number(math.floor(n + 0.5)) or GW.Decimal(n))
+end
+
 ---------------------------------------------------------------------------
--- column 1: bags (SELL-1, SELL-2)
+-- your bags (SELL-1, SELL-2)
 ---------------------------------------------------------------------------
 --- Calls fn(info, loc, bag, slot) for each bag slot whose item passes want(info) and can be
 --- auctioned. Stops at the first non-nil value fn returns, and returns it.
@@ -232,8 +268,9 @@ local function scanBags()
     g.count = g.count + (info.stackCount or 1)
   end)
   for _, g in ipairs(list) do
+    -- the live Fast price once the item was searched this visit, else the data pack's
     local here = packFor(g.itemID)
-    g.unit = here and here.min and GW.UndercutPrice(here.min) or nil
+    g.unit = state.live[g.itemID] or (here and here.min and GW.UndercutPrice(here.min)) or nil
     g.total = g.unit and g.unit * g.count or 0
   end
   -- Sort by value when the panel opens, then keep that order while it stays open: posting part of
@@ -278,11 +315,35 @@ local function findLocation(itemID)
   )
 end
 
---- Redraws the Choose column: rows with value and notes, the footer and the hidden-items link.
+--- The chip under a bag item's name: one note, the first that applies (hidden; a vendor pays
+--- more; another house pays more; far from normal; bait skipped in the data pack).
+---@param g SellBagItem
+---@return string|nil text
+---@return string|nil kind chip colours: "grey", "blue" or "orange"
+local function bagNote(g)
+  if g.hidden then return L["hidden"], "grey" end
+  local here, d = packFor(g.itemID)
+  local vendor = GW.VendorPrice(g.itemID)
+  if vendor > 0 and g.unit and GW.Net(sellSide(), g.unit) <= vendor then return L["vendor pays more"], "grey" end
+  local other, gain = betterElsewhere(here, d)
+  if other then return string.format("%s +%d%%", GW.HOUSE_NAMES[other], gain), "blue" end
+  local kind, pct = GW.PriceCheck(g.unit, normalPrice(here))
+  if kind == "above" and pct >= FAR_ABOVE then return L["over 10× normal"], "orange" end
+  if kind == "above" then return string.format(L["%d%% above normal"], pct), "orange" end
+  if kind == "below" then return string.format(L["%d%% below normal"], pct), "orange" end
+  if here and here.baitUnits and here.baitUnits > 0 then return L["bait skipped"], "orange" end
+  return nil
+end
+
+--- Redraws the bag list: rows with price each and a note, the item count, the footer and the
+--- hidden-items link.
 local function renderBags()
-  local total = 0
+  local total, shown = 0, 0
   for _, g in ipairs(state.bags) do
-    if not g.hidden then total = total + g.total end
+    if not g.hidden then
+      total = total + g.total
+      shown = shown + 1
+    end
   end
   for i, row in ipairs(panel.rows) do
     local g = state.bags[i + state.offset]
@@ -291,32 +352,26 @@ local function renderBags()
       row:Show()
       row.icon:SetTexture(g.icon or 134400)
       row.icon:SetDesaturated(g.hidden and true or false)
-      row.name:SetText(g.name .. "  |cff9a9aa2×" .. g.count .. "|r")
-      setColor(row.name, g.hidden and GREY or qualityColor(g.quality))
-      row.sub:SetText(g.total > 0 and string.format(L["about %s"], GW.Money(g.total)) or L["no price data"])
-      local here, d = packFor(g.itemID)
-      local vendor = GW.VendorPrice(g.itemID)
-      local note = ""
-      if g.hidden then
-        note = "|cff9a9aa2" .. L["hidden"] .. "|r"
-      elseif vendor > 0 and g.unit and GW.Net(sellSide(), g.unit) <= vendor then
-        note = "|cfff59e4b" .. L["vendor pays more"] .. "|r"
-      elseif betterElsewhere(here, d) then
-        local other, gain = betterElsewhere(here, d)
-        note = string.format("|cff8fb0ff%s +%d%%|r", GW.HOUSE_NAMES[other], gain)
-      elseif here and here.baitUnits and here.baitUnits > 0 then
-        note = "|cfff59e4b" .. L["bait skipped"] .. "|r"
+      row.name:SetText(g.count > 1 and string.format("%s  %s×%d|r", g.name, hex(T.faint), g.count) or g.name)
+      setColor(row.name, g.hidden and T.faint or qualityColor(g.quality))
+      row.value:SetText(g.unit and GW.Money(g.unit, true) or "–")
+      UI.SetChip(row.chip, bagNote(g))
+      -- one line when there is no note, centred like the price
+      row.name:ClearAllPoints()
+      if row.chip:IsShown() then
+        row.name:SetPoint("TOPLEFT", 46, -5)
+      else
+        row.name:SetPoint("LEFT", 46, 0)
       end
-      row.note:SetText(note)
-      row.sel:SetShown(state.sel and state.sel.itemID == g.itemID)
+      local on = state.sel and state.sel.itemID == g.itemID or false
+      row.sel:SetShown(on)
+      row.bar:SetShown(on)
     else
       row:Hide()
     end
   end
-  local shown = #state.bags - (state.showHidden and state.hiddenCount or 0)
-  panel.bagFooter:SetText(
-    GW.Plural(shown, "%d sellable item · about %s", "%d sellable items · about %s", GW.Money(total))
-  )
+  panel.bagCount:SetText(GW.PluralCount(shown, "%s item", "%s items"))
+  panel.bagWorth:SetText(string.format(L["Worth about %s"], GW.Money(total)))
   if (state.hiddenCount or 0) > 0 then
     panel.hiddenLink:SetText(
       string.format(
@@ -331,7 +386,7 @@ local function renderBags()
 end
 
 ---------------------------------------------------------------------------
--- column 3: strategies, price, receipt (SELL-4..11, 17, 18)
+-- your listing: strategies, price, what you get (SELL-4..11, 17, 18)
 ---------------------------------------------------------------------------
 --- The price per item in the price box.
 ---@return number copper
@@ -352,6 +407,10 @@ local function setUnitPrice(c)
   state.settingPrice = false
 end
 
+--- Sets the line under the strategy buttons (why this price).
+---@param text string
+local function setWhy(text) panel.why:SetText(text or "") end
+
 --- Puts a price the player chose in the price box (the controller's steps, Gamepad.Adjustable):
 --- like a typed one, it is "your own price", not a strategy's.
 ---@param c number copper
@@ -359,7 +418,7 @@ local function setOwnPrice(c)
   state.strategy = nil
   state.typed = true
   setUnitPrice(c) -- the price box's change handler recalculates the receipt
-  panel.why:SetText(L["Your own price."])
+  setWhy(L["Your own price."])
 end
 
 --- The price that will be posted: what's in the box, copper included for items too (#8).
@@ -395,30 +454,37 @@ local function postLabel(g, qty)
   return string.format(L["Post %s"], g.name)
 end
 
---- Redraws column 3 for the current price, quantity and duration: strategy buttons, receipt
---- (deposit, cut, what you receive), the market check line and the Post button.
+--- Shows the warning box with `text`, or hides it when there is nothing to warn about.
+---@param text string
+local function setWarning(text)
+  panel.warn:SetText(text)
+  if text == "" then
+    panel.warnBox:Hide()
+  else
+    panel.warnBox:SetHeight(math.floor((panel.warn:GetStringHeight() or 12) + 14.5))
+    panel.warnBox:Show()
+  end
+end
+
+--- Redraws the listing card for the current price, quantity and duration: strategy buttons, what
+--- you get (after the cut), the deposit, the time to sell, the warning and the Post button.
 local function recalc()
   local g = state.sel
   if not g then return end
   local qty, unit = quantity(), postUnit()
 
-  -- strategy buttons show what you'd receive at the current quantity
+  -- Strategy buttons show their price each.
+  local P = state.prices
   for _, b in ipairs(panel.stratButtons) do
-    local p = state.prices and state.prices[b.key]
+    local p = P and P[b.key]
     if p then
       b:SetText(string.format("%s\n%s", b.label, GW.Money(p)))
-      b.receive:SetText(string.format(L["get %s"], GW.Money(youReceive(p, qty))))
       b:Enable()
     else
       b:SetText(b.label)
-      b.receive:SetText("")
       b:Disable()
     end
-    if state.strategy == b.key then
-      b:LockHighlight()
-    else
-      b:UnlockHighlight()
-    end
+    UI.SetSelected(b, state.strategy == b.key)
   end
 
   -- Deposit from the item's current slot: after a post the remembered slot can be empty, and the
@@ -434,56 +500,65 @@ local function recalc()
       deposit = ok and d or nil
     end
   end
-  local gross = unit * qty
-  local cut = math.floor(gross * sellCut() + 0.5)
-  panel.r1L:SetText(string.format(L["Listing total (%d × %s)"], qty, GW.Money(unit)))
-  panel.r1R:SetText(GW.Money(gross))
-  panel.r2L:SetText(string.format(L["Auction house cut (%d%%)"], math.floor(sellCut() * 100 + 0.5)))
-  panel.r2R:SetText("−" .. GW.Money(cut))
-  panel.r3L:SetText(L["You receive if all sell"])
-  panel.r3R:SetText(GW.Money(gross - cut))
-  panel.r4L:SetText(L["Deposit now (back when it sells)"])
-  panel.r4R:SetText(deposit and GW.Money(deposit) or "?")
+  panel.youGetLabel:SetText(string.format(L["You get, after the %d%% cut"], math.floor(sellCut() * 100 + 0.5)))
+  local tooHigh = unit * qty > MAX_LISTING
+  -- big font; one size smaller when a large amount doesn't fit the card
+  panel.youGet:SetFontObject(YOU_GET_FONT)
+  panel.youGet:SetText(tooHigh and "—" or GW.Money(youReceive(unit, qty)))
+  if panel.youGet:GetStringWidth() > panel.youGetWidth then panel.youGet:SetFontObject(YOU_GET_SMALL) end
+  UI.SetColor(panel.youGet, T.text)
+  panel.deposit:SetText(string.format(L["Deposit %s, back when it sells"], deposit and GW.Money(deposit) or "?"))
 
-  -- Time to sell at this price: what's listed at or below it plus ours, at the house's sales per day.
+  -- How many other players' units are listed cheaper than this price: buyers take those first (a
+  -- new listing goes first among its own price). A count, not a forecast: others keep posting.
   local here = packFor(g.itemID)
+  local cheaper
+  if state.stats and unit > 0 then
+    cheaper = 0
+    for _, l in ipairs(state.stats.sorted) do
+      if not l.own and l.price < unit then cheaper = cheaper + l.qty end
+    end
+  end
+  -- too slow for the auction: more listed at or below this price than usually sells in its time
   local hours = GW.TimeToSell(state.stats and state.stats.sorted, unit, qty, (GW.SellRate(here)))
   local auctionHours = GW.DURATION_HOURS[state.duration]
   local tooSlow = hours and auctionHours and hours > auctionHours
-  panel.r5L:SetText(L["Time to sell at this price"])
-  panel.r5R:SetText(hours and GW.TimeToSellText(hours) or "?")
-  setColor(panel.r5R, tooSlow and GW.SIGNAL_ORANGE or WHITE)
+  panel.sellTime:SetText(
+    not cheaper and ""
+      or cheaper == 0 and L["Nothing listed cheaper than you"]
+      or string.format(L["%s listed cheaper than you"], GW.Number(cheaper))
+  )
+  setColor(panel.sellTime, tooSlow and GW.SIGNAL_ORANGE or T.faint)
 
-  -- market check line (SELL-7 / SELL-8): against the 7-day normal, else today's typical price
-  local normal = here and (here.avg7 or here.avg30)
-  local ref, messages = normal, PRICE_CHECK.normal
+  -- The warning (SELL-7 / SELL-8): far from the 7-day normal (else the market price), a vendor
+  -- paying more, or too slow for the auction's duration.
+  local ref, messages = normalPrice(here), PRICE_CHECK.normal
   if not ref then
-    ref, messages = (state.stats and state.stats.mv) or (here and here.mv), PRICE_CHECK.typical
+    ref, messages = (state.stats and state.stats.mv) or (here and here.mv), PRICE_CHECK.market
   end
-  local warn, warnColor = "", GREY
+  local warn = ""
   local kind, pct = GW.PriceCheck(unit, ref)
-  if kind == "at" then
-    warn = string.format(messages.at, GW.Money(ref))
-  elseif kind then
+  if kind == "above" and pct >= FAR_ABOVE then
+    warn = string.format(messages.farAbove, GW.Money(ref))
+  elseif kind == "below" or kind == "above" then
     warn = string.format(messages[kind], pct, GW.Money(ref))
-    if kind == "below" or kind == "above" then warnColor = GW.SIGNAL_ORANGE end
   end
   local vendor = GW.VendorPrice(g.itemID)
   if vendor > 0 and unit > 0 and GW.Net(sellSide(), unit) <= vendor then
-    warn, warnColor =
-      string.format(L["A vendor pays %s each, more than you'd net here. Sell to a vendor instead."], GW.Money(vendor)),
-      GW.SIGNAL_ORANGE
+    warn =
+      string.format(L["A vendor pays %s each, more than you'd net here. Sell to a vendor instead."], GW.Money(vendor))
   end
   if tooSlow and warn == "" then
-    warn, warnColor =
-      string.format(
-        L["At this price it may not all sell within the %d h auction: a lower price or fewer at a time."],
-        auctionHours
-      ),
-      GW.SIGNAL_ORANGE
+    warn = string.format(
+      L["At this price it may not all sell within the %d h auction: a lower price or fewer at a time."],
+      auctionHours
+    )
   end
-  panel.warn:SetText(warn)
-  setColor(panel.warn, warnColor)
+  if tooHigh then
+    warn = string.format(L["Too high: one listing can't be more than %s in total."], GW.Money(MAX_LISTING))
+  end
+  setWarning(warn)
+
   -- Only data-pack prices so far (live listings still loading): wait, unless the player typed a price.
   local loading = state.searching and not state.stats and not state.typed
   local p = state.pending
@@ -493,21 +568,23 @@ local function recalc()
       or p and p.warning and string.format(L["Confirm: %s"], postLabel(g, qty))
       or postLabel(g, qty)
   )
-  panel.post:SetEnabled(unit > 0 and not loading and not confirmWait and (not p or p.warning) and true or false)
+  panel.post:SetEnabled(
+    unit > 0 and not tooHigh and not loading and not confirmWait and (not p or p.warning) and true or false
+  )
 end
 
 --- Sets state.prices for the selected item from live listings (or the data pack while they load);
 --- nil when there is no price at all.
 local function computePrices()
   local g, s = state.sel, state.stats
-  local cheapest, typical, own
+  local cheapest, market, own
   if s then
     local first = s.sorted[s.firstRealIndex]
-    cheapest, typical, own = first.price, s.mv, first.own
+    cheapest, market, own = first.price, s.mv, first.own
   else
     local here = packFor(g.itemID)
     if here then
-      cheapest, typical = here.min, here.mv
+      cheapest, market = here.min, here.mv
     end
   end
   if not cheapest then
@@ -515,27 +592,26 @@ local function computePrices()
     return
   end
   local fast = GW.UndercutPrice(cheapest, own)
-  local typ = math.max(fast, (typical or cheapest) - 1)
-  local patient = math.max(typ + 1, math.floor((typical or cheapest) * PATIENT_MARKUP + 0.5))
-  state.prices =
-    { fast = fast, typical = typ, patient = patient, cheapest = cheapest, typicalPrice = typical, own = own }
+  -- Patient: ~10% above the market price, never under it and always above Fast
+  local ref = market or cheapest
+  local patient = math.max(fast + 1, ref, math.floor(ref * PATIENT_MARKUP + 0.5))
+  state.prices = { fast = fast, patient = patient, cheapest = cheapest, marketPrice = market, own = own }
 end
 
 --- Selects a strategy, puts its price in the box and shows why.
----@param key string "fast", "typical" or "patient"
+---@param key string "fast" or "patient"
 ---@param reason string? text for the line under the buttons
 local function chooseStrategy(key, reason)
   state.strategy = key
   state.typed = nil
   local p = state.prices and state.prices[key]
   if p then setUnitPrice(p) end
-  panel.why:SetText(reason or "")
+  setWhy(reason)
   recalc()
 end
 
---- Works out the prices and picks the default strategy: Sell Fast, unless your own listing is
---- already the cheapest (match it), selling fast would net less than a vendor pays, or it would be
---- more than 15% under the typical price (then Typical).
+--- Works out the prices and picks the default strategy: Fast, unless selling fast would net less
+--- than a vendor pays or be more than 15% under the market price (then Patient).
 local function applyDefaultStrategy()
   computePrices()
   if state.typed then -- the player's own price stays; the strategy buttons still show the new prices
@@ -546,7 +622,7 @@ local function applyDefaultStrategy()
   if not P then
     state.strategy = nil
     setUnitPrice(0)
-    panel.why:SetText(
+    setWhy(
       state.searching and L["Live listings loading…"] or L["No listings and no price data: type your own price."]
     )
     recalc()
@@ -561,90 +637,91 @@ local function applyDefaultStrategy()
         GW.Money(s.baitPrice)
       ))
     or ""
-  -- Judge the price Sell fast would post, not the cheapest listing, and never default to netting
-  -- less than a vendor pays.
+  -- Judge the price Fast would post, not the cheapest listing, and never default to netting less
+  -- than a vendor pays.
   local vendor = GW.VendorPrice(state.sel.itemID)
-  local fastBelowVendor = vendor > 0 and GW.Net(sellSide(), P.fast) <= vendor and GW.Net(sellSide(), P.typical) > vendor
+  local fastBelowVendor = vendor > 0 and GW.Net(sellSide(), P.fast) <= vendor and GW.Net(sellSide(), P.patient) > vendor
   if P.own then
     chooseStrategy("fast", loading .. L["Your own listing is already the cheapest; matching it."] .. bait)
   elseif fastBelowVendor then
     chooseStrategy(
-      "typical",
+      "patient",
       loading
-        .. string.format(L["Typical chosen: selling fast would net less than a vendor pays (%s)."], GW.Money(vendor))
+        .. string.format(L["Patient chosen: Fast would net less than a vendor pays (%s)."], GW.Money(vendor))
         .. bait
     )
-  elseif P.typicalPrice and P.fast < P.typicalPrice * FAST_OK_RATIO then
+  elseif P.marketPrice and P.fast < P.marketPrice * FAST_OK_RATIO then
     chooseStrategy(
-      "typical",
+      "patient",
       loading
         .. string.format(
-          L["Typical chosen: selling fast would be %d%% under the typical price."],
-          math.floor((1 - P.fast / P.typicalPrice) * 100 + 0.5)
+          L["Patient chosen: Fast would be %d%% under the market price."],
+          math.floor((1 - P.fast / P.marketPrice) * 100 + 0.5)
         )
         .. bait
     )
   else
-    chooseStrategy("fast", loading .. GW.SellFastText(GW.Money(P.cheapest)) .. bait)
+    chooseStrategy("fast", loading .. GW.FastText(GW.Money(P.cheapest)) .. bait)
   end
 end
 
 ---------------------------------------------------------------------------
--- column 2: market (SELL-3, 15, 16)
+-- the market card (SELL-3, 15, 16)
 ---------------------------------------------------------------------------
---- Redraws column 2's numbers: typical price, cheapest real, listing count, other houses, and the
---- cheapest listings with their notes (bait, yours, cheapest real seller, typical price).
+--- The note a cheapest-listings row carries (its tooltip and its colour).
+---@param s table market stats
+---@param i number row index
+---@return string|nil note
+---@return number[] color price colour
+local function ladderNote(s, i)
+  local x = s.sorted[i]
+  if i < s.firstRealIndex then return L["likely bait, skipped"], T.faint end
+  if x.own then return L["yours"], T.gold end
+  if i == s.firstRealIndex then return L["cheapest real seller"], T.text end
+  return nil, T.text
+end
+
+--- Redraws the market card's numbers: Lowest now, Normal (last 7 days), Sold per day, and the
+--- cheapest listings with their quantities and the total listed (#11).
 local function renderMarket()
   local g, s = state.sel, state.stats
   if not g then return end
-  local here, d = packFor(g.itemID)
-  local typical = (s and s.mv) or (here and here.mv)
-  panel.st1:SetText(typical and GW.Money(typical) or "–")
-  panel.st2:SetText(s and GW.Money(s.sorted[s.firstRealIndex].price) or (here and GW.Money(here.min)) or "–")
-  panel.st3:SetText(s and tostring(#s.sorted) or "–")
-  local others = {}
-  if d then
-    for _, side in ipairs({ "A", "H", "N" }) do
-      if side ~= sellSide() and d[side] and d[side].mv then
-        local label = side == "N" and L["BW %s"] or side == "H" and L["Horde %s"] or L["Ally %s"]
-        others[#others + 1] = string.format(label, GW.Money(d[side].mv))
-      end
+  local here = packFor(g.itemID)
+  local lowest = (s and s.sorted[s.firstRealIndex].price) or (here and here.min)
+  panel.lowest:SetText(lowest and GW.Money(lowest) or "–")
+  panel.normal:SetText(here and here.avg7 and GW.Money(here.avg7) or "–")
+  panel.perDay:SetText(perDayText(here))
+  -- what the number counts, and whether it is an estimate (gear: listings gone early)
+  local n, proven = GW.SellRate(here)
+  panel.perDayHit.tip = not n and { L["No sales data for this item yet."] }
+    or {
+      string.format(L["Items bought per day at %s, average of the last 10 days."], GW.HOUSE_NAMES[sellSide()]),
+      not proven and L["Estimate: counts listings that went early, so some may have been cancelled."] or nil,
+    }
+
+  local maxQty, total = 1, 0
+  if s then
+    for i, x in ipairs(s.sorted) do
+      total = total + x.qty
+      if i <= LADDER_ROWS and x.qty > maxQty then maxQty = x.qty end
     end
   end
-  panel.st4:SetText(#others > 0 and table.concat(others, "\n") or "–")
-
-  for i, r in ipairs(panel.listRows) do
+  for i, r in ipairs(panel.ladder) do
     local x = s and s.sorted[i]
     if x then
-      r.price:SetText(GW.Money(x.price))
-      r.qty:SetText(tostring(x.qty))
-      if i < s.firstRealIndex then
-        r.note:SetText(L["likely bait, skipped"])
-        setColor(r.note, GW.SIGNAL_ORANGE)
-        r.price:SetTextColor(0.55, 0.55, 0.58)
-        r.qty:SetTextColor(0.55, 0.55, 0.58)
-      else
-        r.price:SetTextColor(1, 1, 1)
-        r.qty:SetTextColor(1, 1, 1)
-        if x.own then
-          r.note:SetText(L["yours"])
-          setColor(r.note, GW.GOLD)
-        elseif i == s.firstRealIndex then
-          r.note:SetText(L["cheapest real seller"])
-          setColor(r.note, GW.SIGNAL_BLUE)
-        elseif s.mv and x.price == s.mv then
-          r.note:SetText(L["typical price"])
-          setColor(r.note, GREY)
-        else
-          r.note:SetText("")
-        end
-      end
+      local note, color = ladderNote(s, i)
+      r.note = note
+      r.price:SetText(GW.Money(x.price, true))
+      setColor(r.price, color)
+      r.qty:SetText(GW.Number(x.qty))
+      UI.SetBar(r.bar, x.qty / maxQty)
+      r:Show()
     else
-      r.price:SetText("")
-      r.qty:SetText("")
-      r.note:SetText("")
+      r.note = nil
+      r:Hide()
     end
   end
+  panel.listTotal:SetText(s and GW.PluralCount(total, "%s listed", "%s listed") or "")
 end
 
 ---------------------------------------------------------------------------
@@ -712,10 +789,17 @@ local function readResults(itemKeyFromEvent, eventName)
   state.searching = false
   local recent = GW.RecentPrice(g.itemID, sellSide())
   state.stats = GW.MarketStats(list, recent)
+  GW.SellCharts.Listings(g.itemID, state.stats) -- the Market window's Supply tab
   GW.NoteBaitSearch(g.itemID, g.name, sellSide(), state.stats, recent)
   panel.listStatus:SetText(state.stats and L["searched just now"] or L["no other listings"])
   renderMarket()
   applyDefaultStrategy()
+  -- the bag row follows the live price too, so its note and the listing's warning agree
+  if state.stats and state.prices then
+    state.live[g.itemID] = state.prices.fast
+    g.unit, g.total = state.prices.fast, state.prices.fast * g.count
+    renderBags()
+  end
 end
 
 --- Sends a search for state.key, sorted by price; counts it against the search limit.
@@ -799,19 +883,19 @@ search = function(g)
   end)
 end
 
---- Redraws the status bar (AH-2): house, data pack age (the banner, AH-3, when the pack is missing or
---- old), last full scan and searches this minute.
+--- Redraws the status bar (AH-2): house, how old the prices are (in orange when the data pack is
+--- missing or old, AH-3) and the last full scan; on the Sell tab, its one hint on the right.
 local function renderStatus()
   local h = GW.House()
   local pack = GW.Pack()
   local days = GW.PackAgeDays()
   local packText
   if not pack then
-    packText = "|cfff59e4b"
+    packText = hex(GW.SIGNAL_ORANGE)
       .. string.format(L["No data pack for %s %s: prices come from live listings only"], h.region, h.ruleset)
       .. "|r"
   elseif days and days > GW.STALE_DAYS then
-    packText = "|cfff59e4b"
+    packText = hex(GW.SIGNAL_ORANGE)
       .. GW.Plural(
         math.floor(days),
         "Data pack is %d day old: update Goldwright Data",
@@ -819,20 +903,20 @@ local function renderStatus()
       )
       .. "|r"
   else
-    packText = string.format(L["Data pack: snapshot %s"], GW.Age(pack.snapshotAt))
+    packText = string.format(L["Prices updated %s"], GW.Age(pack.snapshotAt))
   end
   local scanText = GW.LastScanText and GW.LastScanText(sellSide())
   panel.status:SetText(
     string.format(
-      "%s · %s · %s     %s     %s     %s",
+      "%s · %s · %s     %s     %s",
       h.region,
       h.ruleset,
       GW.HOUSE_NAMES[sellSide()],
       packText,
-      scanText and string.format(L["Last scan %s"], scanText) or L["No full scan yet"],
-      string.format(L["Searches this minute: %d / %d"], GW.SearchesThisMinute(), GW.SEARCH_LIMIT)
+      scanText and string.format(L["Last scan %s"], scanText) or L["No full scan yet"]
     )
   )
+  panel.hint:SetText(GW.activeTab == "sell" and L["Click an item to price it · right-click to hide it"] or "")
 end
 
 --- Sets the auction duration and highlights its button.
@@ -844,7 +928,7 @@ local function setDuration(idx)
   end
 end
 
---- Deselects the item, stops its search timers and shows a message in place of columns 2 and 3.
+--- Deselects the item, stops its search timers and shows a message in the market card instead.
 ---@param message string? text to show (default: "Choose an item on the left...")
 local function clearSelection(message)
   state.sel, state.stats, state.strategy, state.token = nil, nil, nil, (state.token or 0) + 1
@@ -855,8 +939,8 @@ local function clearSelection(message)
   renderBags()
 end
 
---- Selects a bag item: fills columns 2 and 3, restores its remembered duration, draws its charts
---- and starts its search.
+--- Selects a bag item: fills the market and listing cards, restores its remembered duration, draws
+--- its chart and starts its search.
 ---@param g SellBagItem
 local function selectItem(g)
   state.sel = g
@@ -864,14 +948,13 @@ local function selectItem(g)
   state.strategy = nil
   state.typed = nil
   panel.iconButton.tex:SetTexture(g.icon or 134400)
-  panel.iconButton:Show()
   panel.itemName:SetText(g.name)
   setColor(panel.itemName, qualityColor(g.quality))
   panel.itemInfo:SetText(
     string.format(
       L["You have %d · %s"],
       g.count,
-      g.isCommodity and L["commodity: one listing for any quantity"] or L["item: one auction per click"]
+      g.isCommodity and L["posts as one listing"] or L["one auction per click"]
     )
   )
   panel.qty:SetText(tostring(g.isCommodity and g.count or 1))
@@ -883,10 +966,11 @@ local function selectItem(g)
   panel.allButton:SetShown(g.isCommodity and true or false)
   local remembered = GoldwrightDB.durations and GoldwrightDB.durations[g.itemID]
   setDuration(remembered or GW.Opt("duration"))
+  toast("")
   panel.col2:Show()
   panel.col3:Show()
   panel.empty:Hide()
-  GW.SellCharts.Render(g.itemID)
+  GW.SellCharts.Render(g.itemID, g.name)
   renderBags()
   search(g)
 end
@@ -951,7 +1035,9 @@ local function tryAdvance()
     for i, g in ipairs(state.bags) do
       if g == nextItem and i > ROWS then state.offset = i - ROWS end
     end
+    local message, color = panel.toast:GetText(), { panel.toast:GetTextColor() }
     selectItem(nextItem)
+    toast(message, color) -- "Posted …" stays while the next item loads
   else
     clearSelection(L["That was the last item in the list. Choose another item, or close the auction house."])
   end
@@ -989,7 +1075,7 @@ local function postSelected()
   local g = state.sel
   if not g then return toast(L["Choose an item first."], GW.SIGNAL_ORANGE) end
   local p = state.pending
-  if p and not p.warning then return toast(L["Waiting for the auction house…"], GREY) end
+  if p and not p.warning then return toast(L["Waiting for the auction house…"], T.muted) end
   if InCombatLockdown and InCombatLockdown() then return toast(L["Not in combat."], GW.SIGNAL_ORANGE) end
 
   -- The auction house asked us to confirm this post (AUCTION_HOUSE_POST_WARNING): this click confirms.
@@ -1003,13 +1089,14 @@ local function postSelected()
       C_AuctionHouse.ConfirmPostItem(loc, p.duration, 1, nil, p.unit)
     end
     p.at = GetTime()
-    toast(L["Confirmed. Waiting for the auction house…"], GREY)
+    toast(L["Confirmed. Waiting for the auction house…"], T.muted)
     recalc()
     return
   end
 
   local unit, qty = postUnit(), quantity()
   if unit <= 0 then return toast(L["Set a price first."], GW.SIGNAL_ORANGE) end
+  if unit * qty > MAX_LISTING then return end -- the warning says why
   local loc = findLocation(g.itemID)
   if not loc then return toast(L["Can't find that item in your bags any more."], GW.SIGNAL_ORANGE) end
   if C_AuctionHouse.IsThrottledMessageSystemReady and not C_AuctionHouse.IsThrottledMessageSystemReady() then
@@ -1043,7 +1130,7 @@ local function postSelected()
   end
   GW.Log("post sent: %d x %s at %d, duration %d", qty, g.name, unit, state.duration)
   GW.NoteBaitPost(g.itemID, sellSide(), unit)
-  toast(L["Posting…"], GREY)
+  toast(L["Posting…"], T.muted)
   recalc()
   C_Timer.After(POST_TIMEOUT, function()
     if state.pending == token and not token.warning then
@@ -1064,7 +1151,7 @@ local ANYWHERE = { shopping = true }
 local function updateTabs()
   local atAH = GW.AuctionHouseOpen and GW.AuctionHouseOpen()
   for _, b in ipairs(panel.tabButtons) do
-    if not b.soon then b:SetEnabled(atAH or ANYWHERE[b.key] or false) end
+    b:SetEnabled(atAH or ANYWHERE[b.key] or false)
   end
 end
 
@@ -1100,6 +1187,7 @@ local function showTab(key)
       GW.ShopView.Hide()
     end
   end
+  renderStatus()
   if key == "sell" then
     scanBags()
     renderBags()
@@ -1107,81 +1195,114 @@ local function showTab(key)
   end
 end
 
+--- The next open tab to the left (-1) or right (1) of the current one, wrapping around; tabs that
+--- don't work here (away from the auction house) are skipped. For the controller's LB / RB.
+---@param dir number -1 or 1
+local function stepTab(dir)
+  local n = #panel.tabButtons
+  local at = 1
+  for i, b in ipairs(panel.tabButtons) do
+    if b.key == GW.activeTab then at = i end
+  end
+  for k = 1, n - 1 do
+    local b = panel.tabButtons[(at - 1 + dir * k) % n + 1]
+    if b:IsEnabled() then return showTab(b.key) end
+  end
+end
+
 ---------------------------------------------------------------------------
 -- construction
 ---------------------------------------------------------------------------
-local header = UI.Header
-
---- Builds the panel window: tab bar, Settings button, the three Sell columns and the status bar.
---- The panel starts hidden.
-local function createPanel()
+--- Builds the window frame: in the Blizzard look (and ElvUI's or EllesmereUI's) the game's title bar
+--- with the tabs under it; in Goldwright dark one header row with the coin, the tabs, Sales,
+--- Settings and the X. Returns the y offset where the content starts.
+---@return number top offset from the window's top to the content (negative)
+local function buildFrame()
   panel = UI.Window("GoldwrightSellFrame", W, H, { title = "Goldwright", movable = true })
   GW.panel = panel
+  local dark = UI.LookName() == "dark"
+
+  local tabX, tabY, tabH = 12, -27, 24
+  if dark then
+    local title = panel.TitleText or (type(panel.TitleContainer) == "table" and panel.TitleContainer.TitleText)
+    if type(title) == "table" and title.Hide then title:Hide() end
+    local coin = panel:CreateTexture(nil, "ARTWORK")
+    coin:SetSize(16, 16)
+    coin:SetPoint("TOPLEFT", 14, -12)
+    coin:SetTexture(GW.ICON)
+    coin:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    local brand = UI.Text(panel, "GameFontNormal", "gold", "LEFT")
+    brand:SetPoint("LEFT", coin, "RIGHT", 7, 0)
+    brand:SetText("Goldwright")
+    local rule = UI.Rule(panel)
+    rule:SetPoint("TOPLEFT", 1, -38)
+    rule:SetPoint("TOPRIGHT", -1, -38)
+    rule:SetHeight(1)
+    if panel.CloseButton then
+      panel.CloseButton:ClearAllPoints()
+      panel.CloseButton:SetPoint("TOPRIGHT", -8, -8)
+    end
+    tabX, tabY, tabH = 128, -7, 26
+  end
 
   panel.tabButtons = {}
   local prev
   for i, t in ipairs(TABS) do
-    local b = UI.TabButton(panel, t.label, t.key == "cancel" and 110 or 90, 22)
+    local b = UI.WindowTab(panel, t.label, tabH, function() showTab(t.key) end)
     b.key = t.key
     if i == 1 then
-      b:SetPoint("TOPLEFT", 14, -30)
+      b:SetPoint("TOPLEFT", tabX, tabY)
     else
-      b:SetPoint("LEFT", prev, "RIGHT", 4, 0)
+      b:SetPoint("LEFT", prev, "RIGHT", dark and 2 or 4, 0)
     end
-    b.soon = t.soon
-    if t.soon then
-      b:Disable()
-      if b.SetMotionScriptsWhileDisabled then b:SetMotionScriptsWhileDisabled(true) end
-      b:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-        GameTooltip:SetText(string.format(L["%s: coming in a later build"], t.label))
-        GameTooltip:Show()
-      end)
-      b:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    else
-      b:SetScript("OnClick", function() showTab(t.key) end)
-      -- greyed out away from the auction house: say why
-      if b.SetMotionScriptsWhileDisabled then b:SetMotionScriptsWhileDisabled(true) end
-      b:SetScript("OnEnter", function(self)
-        if self:IsEnabled() then return end
-        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-        GameTooltip:SetText(L["Open the auction house to use this tab."])
-        GameTooltip:Show()
-      end)
-      b:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    end
+    -- greyed out away from the auction house: say why
+    if b.SetMotionScriptsWhileDisabled then b:SetMotionScriptsWhileDisabled(true) end
+    b:SetScript("OnEnter", function(self)
+      if self:IsEnabled() then return end
+      GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+      GameTooltip:SetText(L["Open the auction house to use this tab."])
+      GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
     panel.tabButtons[i] = b
     prev = b
   end
-  local gear = UI.Button(panel, L["Settings"], 90, 22)
-  gear:SetPoint("TOPRIGHT", -14, -30)
-  gear:SetScript("OnClick", function()
+  local gear = UI.Button(panel, L["Settings"], 84, 20, function()
     if GW.OpenSettings then GW.OpenSettings() end
   end)
+  gear:SetPoint("TOPRIGHT", dark and -38 or -12, dark and -9 or -29)
   -- Your sales record has its own window (SalesView.lua): it doesn't need the auction house.
-  local sales = UI.Button(panel, L["Sales"], 90, 22, function()
+  local sales = UI.Button(panel, L["Sales"], 70, 20, function()
     if GW.OpenSales then GW.OpenSales() end
   end)
   sales:SetPoint("RIGHT", gear, "LEFT", -4, 0)
   panel.salesButton = sales
+  -- With a controller, LB / RB switch tabs while the window is open.
+  panel.stepTab = stepTab
+  if GW.Gamepad and GW.Gamepad.Tabs then GW.Gamepad.Tabs(panel, stepTab) end
 
-  local inset = panel.Inset or panel
-  if panel.Inset then
-    panel.Inset:ClearAllPoints()
-    panel.Inset:SetPoint("TOPLEFT", 8, -58)
-    panel.Inset:SetPoint("BOTTOMRIGHT", -8, 30)
-  end
-  panel.inset = inset
-  local view = CreateFrame("Frame", nil, inset)
-  view:SetAllPoints()
-  panel.sellView = view
+  panel.status = UI.Text(panel, "GameFontDisableSmall", "faint", "LEFT")
+  panel.status:SetPoint("BOTTOMLEFT", 14, 9)
+  panel.hint = UI.Text(panel, "GameFontDisableSmall", "faint", "RIGHT")
+  panel.hint:SetPoint("BOTTOMRIGHT", -14, 9)
+  return dark and -42 or -54
+end
 
-  -- Column 1: choose ----------------------------------------------------------
-  header(view, L["1 · Choose"], 12, -8)
+--- Builds the bags card: caption and count, the rows, the footer and the hidden-items link.
+---@param view table the Sell view
+local function buildBags(view)
+  local card = UI.Card(view)
+  card:SetPoint("TOPLEFT", 6, -6)
+  card:SetPoint("BOTTOMLEFT", 6, 6)
+  card:SetWidth(BAGS_W)
+  UI.Caption(card, L["Your bags"], 12, -10)
+  panel.bagCount = UI.Text(card, "GameFontHighlightSmall", "faint", "RIGHT")
+  panel.bagCount:SetPoint("TOPRIGHT", -12, -12)
+
   panel.rows = {}
-  local list = CreateFrame("Frame", nil, view)
-  list:SetPoint("TOPLEFT", 6, -28)
-  list:SetSize(236, ROWS * ROW_H)
+  local list = CreateFrame("Frame", nil, card)
+  list:SetPoint("TOPLEFT", 1, -30)
+  list:SetSize(BAGS_W - 2, ROWS * ROW_H)
   list:EnableMouseWheel(true)
   list:SetScript("OnMouseWheel", function(_, delta)
     state.offset = math.max(0, math.min(state.offset - delta, math.max(0, #state.bags - ROWS)))
@@ -1189,26 +1310,39 @@ local function createPanel()
   end)
   for i = 1, ROWS do
     local row = CreateFrame("Button", nil, list)
-    row:SetSize(236, ROW_H)
+    row:SetSize(BAGS_W - 2, ROW_H)
     row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+    local line = UI.Rule(row, "rowLine")
+    line:SetPoint("TOPLEFT")
+    line:SetPoint("TOPRIGHT")
+    line:SetHeight(1)
+    local lit = row:CreateTexture(nil, "HIGHLIGHT")
+    lit:SetAllPoints()
+    lit:SetColorTexture(T.hover[1], T.hover[2], T.hover[3], T.hover[4])
     row.sel = row:CreateTexture(nil, "BACKGROUND")
     row.sel:SetAllPoints()
-    row.sel:SetColorTexture(0.24, 0.37, 0.66, 0.35)
+    row.sel:SetColorTexture(T.selected[1], T.selected[2], T.selected[3], T.selected[4])
     row.sel:Hide()
+    row.bar = row:CreateTexture(nil, "ARTWORK")
+    row.bar:SetPoint("TOPLEFT")
+    row.bar:SetPoint("BOTTOMLEFT")
+    row.bar:SetWidth(2)
+    row.bar:SetColorTexture(T.gold[1], T.gold[2], T.gold[3], 1)
+    row.bar:Hide()
     row.icon = row:CreateTexture(nil, "ARTWORK")
-    row.icon:SetSize(24, 24)
-    row.icon:SetPoint("LEFT", 4, 0)
+    row.icon:SetSize(28, 28)
+    row.icon:SetPoint("LEFT", 10, 0)
     row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    row.name = fs(row, "GameFontHighlight", "LEFT")
-    row.name:SetPoint("TOPLEFT", 34, -3)
-    row.name:SetWidth(196)
+    row.name = UI.FontString(row, "GameFontHighlight", "LEFT")
+    row.name:SetPoint("TOPLEFT", 46, -5)
+    row.name:SetWidth(BAGS_W - 46 - 78)
     row.name:SetWordWrap(false)
-    row.sub = fs(row, "GameFontDisableSmall", "LEFT")
-    row.sub:SetPoint("BOTTOMLEFT", 34, 3)
-    row.note = fs(row, "GameFontHighlightSmall", "RIGHT")
-    row.note:SetPoint("BOTTOMRIGHT", -4, 3)
+    row.chip = UI.Chip(row)
+    row.chip:SetPoint("TOPLEFT", 46, -21)
+    row.value = UI.Text(row, "GameFontHighlightSmall", "muted", "RIGHT")
+    row.value:SetPoint("RIGHT", -10, 0)
+    row.value:SetWidth(74)
     row:SetScript("OnClick", function(self, button)
       local g = self.g
       if not g then return end
@@ -1237,11 +1371,19 @@ local function createPanel()
     row:SetScript("OnLeave", function() GameTooltip:Hide() end)
     panel.rows[i] = row
   end
-  panel.bagFooter = fs(view, "GameFontDisableSmall", "LEFT")
-  panel.bagFooter:SetPoint("BOTTOMLEFT", 10, 8)
-  panel.hiddenLink = CreateFrame("Button", nil, view)
-  panel.hiddenLink:SetSize(110, 16)
-  panel.hiddenLink:SetPoint("BOTTOMLEFT", 10, 22)
+
+  local foot = UI.Rule(card)
+  foot:SetPoint("BOTTOMLEFT", 1, 44)
+  foot:SetPoint("BOTTOMRIGHT", -1, 44)
+  foot:SetHeight(1)
+  panel.bagWorth = UI.Text(card, "GameFontHighlightSmall", "faint", "LEFT")
+  panel.bagWorth:SetPoint("BOTTOMLEFT", 12, 26)
+  local each = UI.Text(card, "GameFontHighlightSmall", "faint", "RIGHT")
+  each:SetPoint("BOTTOMRIGHT", -12, 26)
+  each:SetText(L["price each"])
+  panel.hiddenLink = CreateFrame("Button", nil, card)
+  panel.hiddenLink:SetSize(150, 16)
+  panel.hiddenLink:SetPoint("BOTTOMLEFT", 10, 6)
   panel.hiddenLink:SetNormalFontObject("GameFontHighlightSmall")
   panel.hiddenLink:SetText(" ")
   panel.hiddenLink:GetFontString():SetJustifyH("LEFT")
@@ -1251,23 +1393,20 @@ local function createPanel()
     scanBags()
     renderBags()
   end)
-  UI.Divider(view, 248)
+end
 
-  panel.empty = fs(view, "GameFontDisable", "CENTER")
-  panel.empty:SetPoint("CENTER", view, "CENTER", 124, 0)
-  panel.empty:SetWidth(600)
-  panel.empty:SetText(L["Choose an item on the left to see its market and price it."])
-
-  -- Column 2: market ----------------------------------------------------------
-  local col2 = CreateFrame("Frame", nil, view)
-  col2:SetPoint("TOPLEFT", 258, -8)
-  col2:SetSize(380, 440)
+--- Builds the market card: the item and its three numbers, the chart, and the cheapest listings.
+---@param card table
+local function buildMarket(card)
+  local col2 = CreateFrame("Frame", nil, card)
+  col2:SetAllPoints()
   panel.col2 = col2
-  header(col2, L["2 · Market"], 0, 0)
+  local width = W - 16 - BAGS_W - 20 -- the card's width
+  local split = width - 238 -- chart | cheapest listings
 
   panel.iconButton = CreateFrame("Button", nil, col2)
-  panel.iconButton:SetSize(34, 34)
-  panel.iconButton:SetPoint("TOPLEFT", 0, -22)
+  panel.iconButton:SetSize(36, 36)
+  panel.iconButton:SetPoint("TOPLEFT", 12, -11)
   panel.iconButton.tex = panel.iconButton:CreateTexture(nil, "ARTWORK")
   panel.iconButton.tex:SetAllPoints()
   panel.iconButton.tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
@@ -1278,95 +1417,157 @@ local function createPanel()
     GameTooltip:Show()
   end)
   panel.iconButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
-  panel.itemName = fs(col2, "GameFontNormalLarge", "LEFT")
-  panel.itemName:SetPoint("TOPLEFT", panel.iconButton, "TOPRIGHT", 10, -1)
-  panel.itemInfo = fs(col2, "GameFontHighlightSmall", "LEFT")
-  panel.itemInfo:SetPoint("TOPLEFT", panel.itemName, "BOTTOMLEFT", 0, -3)
-  setColor(panel.itemInfo, GREY)
+  panel.itemName = UI.FontString(col2, "GameFontNormalLarge", "LEFT")
+  panel.itemName:SetPoint("TOPLEFT", 58, -12)
+  panel.itemName:SetWidth(300)
+  panel.itemName:SetWordWrap(false)
+  panel.itemInfo = UI.Text(col2, "GameFontHighlightSmall", "muted", "LEFT")
+  panel.itemInfo:SetPoint("TOPLEFT", 58, -32)
 
+  -- three numbers, each a label over one big value
   local stats = {
-    { L["Typical price"], "st1" },
-    { L["Cheapest real"], "st2" },
-    { L["Listings"], "st3" },
-    { L["Other houses"], "st4" },
+    { L["Lowest now"], "lowest", 100 },
+    { L["Normal, last 7 days"], "normal", 124 },
+    { L["Sold per day"], "perDay", 84 },
   }
-  for i, s in ipairs(stats) do
-    local x = (i - 1) * 95
-    local lab = fs(col2, "GameFontDisableSmall", "LEFT")
-    lab:SetPoint("TOPLEFT", x, -66)
+  local x = width - 12
+  for i = #stats, 1, -1 do
+    local s = stats[i]
+    x = x - s[3]
+    local lab = UI.Text(col2, "GameFontNormalSmall", "label", "LEFT")
+    lab:SetPoint("TOPLEFT", x, -12)
     lab:SetText(s[1])
-    local val = fs(col2, i == 4 and "GameFontHighlightSmall" or "GameFontHighlightLarge", "LEFT")
-    val:SetPoint("TOPLEFT", x, -80)
+    local val = UI.Text(col2, "GameFontHighlightLarge", "text", "LEFT")
+    val:SetPoint("TOPLEFT", x, -28)
     panel[s[2]] = val
+    x = x - 8
   end
+  -- hovering Sold per day says what it counts (renderMarket fills .tip)
+  local hit = CreateFrame("Frame", nil, col2)
+  hit:SetPoint("TOPLEFT", panel.perDay, "TOPLEFT", 0, 18)
+  hit:SetSize(84, 44)
+  hit:EnableMouse(true)
+  hit:SetScript("OnEnter", function(self)
+    if not self.tip then return end
+    GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+    GameTooltip:SetText(L["Sold per day"], 1, 1, 1)
+    for _, line in ipairs(self.tip) do
+      GameTooltip:AddLine(line, nil, nil, nil, true)
+    end
+    GameTooltip:Show()
+  end)
+  hit:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  panel.perDayHit = hit
+  local rule = UI.Rule(col2)
+  rule:SetPoint("TOPLEFT", 1, -58)
+  rule:SetPoint("TOPRIGHT", -1, -58)
+  rule:SetHeight(1)
+  local v = UI.Rule(col2)
+  v:SetPoint("TOPLEFT", split, -58)
+  v:SetPoint("BOTTOMLEFT", split, 1)
+  v:SetWidth(1)
 
-  local lh = header(col2, L["Cheapest listings"], 0, -120)
-  panel.listStatus = fs(col2, "GameFontDisableSmall", "LEFT")
-  panel.listStatus:SetPoint("LEFT", lh, "RIGHT", 10, 0)
-  local c1 = fs(col2, "GameFontDisableSmall", "LEFT")
-  c1:SetPoint("TOPLEFT", 0, -138)
-  c1:SetText(L["Price each"])
-  local c2 = fs(col2, "GameFontDisableSmall", "LEFT")
-  c2:SetPoint("TOPLEFT", 110, -138)
-  c2:SetText(L["Quantity"])
-  local c3 = fs(col2, "GameFontDisableSmall", "LEFT")
-  c3:SetPoint("TOPLEFT", 190, -138)
-  c3:SetText(L["Note"])
-  panel.listRows = {}
-  for i = 1, 7 do
-    local y = -154 - (i - 1) * 18
-    local r = {}
-    r.price = fs(col2, "GameFontHighlight", "LEFT")
-    r.price:SetPoint("TOPLEFT", 0, y)
-    r.qty = fs(col2, "GameFontHighlight", "LEFT")
-    r.qty:SetPoint("TOPLEFT", 110, y)
-    r.note = fs(col2, "GameFontHighlightSmall", "LEFT")
-    r.note:SetPoint("TOPLEFT", 190, y)
-    panel.listRows[i] = r
-  end
-
-  -- Price history (SELL-15) and best time to post (SELL-16), side by side: SellCharts.lua
-  GW.SellCharts.Create(col2)
+  -- the chart: price history or best time to post (SellCharts.lua)
+  GW.SellCharts.Create(col2, { x = 12, y = -68, w = split - 24, h = MARKET_H - 68 - 6 })
   panel.charts = GW.SellCharts
-  UI.Divider(view, 648)
 
-  -- Column 3: your listing ----------------------------------------------------
-  local col3 = CreateFrame("Frame", nil, view)
-  col3:SetPoint("TOPLEFT", 658, -8)
-  col3:SetSize(318, 440)
+  -- cheapest listings: price each | quantity bar | quantity
+  local lx = split + 12
+  local lw = width - lx - 12
+  UI.Caption(col2, L["Cheapest listings"], lx, -71)
+  panel.ladder = {}
+  for i = 1, LADDER_ROWS do
+    local r = CreateFrame("Frame", nil, col2)
+    r:SetSize(lw, LADDER_H)
+    r:SetPoint("TOPLEFT", lx, -92 - (i - 1) * LADDER_H)
+    r:EnableMouse(true)
+    local line = UI.Rule(r, "rowLine")
+    line:SetPoint("TOPLEFT")
+    line:SetPoint("TOPRIGHT")
+    line:SetHeight(1)
+    r.price = UI.FontString(r, "GameFontHighlightSmall", "RIGHT")
+    r.price:SetPoint("LEFT", 0, 0)
+    r.price:SetWidth(78)
+    r.bar = UI.Bar(r, lw - 78 - 8 - 40, 6)
+    r.bar:SetPoint("LEFT", 86, 0)
+    r.qty = UI.Text(r, "GameFontHighlightSmall", "muted", "RIGHT")
+    r.qty:SetPoint("RIGHT", 0, 0)
+    r.qty:SetWidth(38)
+    r:SetScript("OnEnter", function(self)
+      if not self.note then return end
+      GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+      GameTooltip:SetText(self.note)
+      GameTooltip:Show()
+    end)
+    r:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    r:Hide()
+    panel.ladder[i] = r
+  end
+  local y = -92 - LADDER_ROWS * LADDER_H - 6
+  panel.listTotal = UI.Text(col2, "GameFontHighlightSmall", "muted", "LEFT")
+  panel.listTotal:SetPoint("TOPLEFT", lx, y)
+  panel.listStatus = UI.Text(col2, "GameFontDisableSmall", "faint", "RIGHT")
+  panel.listStatus:SetPoint("TOPRIGHT", col2, "TOPLEFT", lx + lw, y)
+end
+
+--- Builds the listing card: strategies and the warning | price, quantity, duration | what you get
+--- and Post.
+---@param card table
+local function buildListing(card)
+  local col3 = CreateFrame("Frame", nil, card)
+  col3:SetAllPoints()
   panel.col3 = col3
-  header(col3, L["3 · Your listing"], 0, 0)
+  local width = W - 16 - BAGS_W - 20
+  local aW, bW = 262, 238 -- column widths; the third takes the rest
 
+  -- strategies
+  UI.Caption(col3, L["Your listing"], 12, -10)
   panel.stratButtons = {}
   for i, st in ipairs(STRATEGIES) do
     local b = UI.NewButton(col3)
-    b:SetSize(100, 40)
-    b:SetPoint("TOPLEFT", (i - 1) * 106, -22)
+    b:SetSize(118, 38)
+    b:SetPoint("TOPLEFT", 12 + (i - 1) * 122, -30)
+    if not UI.Skinned() then -- the game's button: a smaller font, so two lines and longer names fit
+      b:SetNormalFontObject("GameFontNormalSmall")
+      b:SetHighlightFontObject("GameFontHighlightSmall")
+      b:SetDisabledFontObject("GameFontDisableSmall")
+    end
     b.key, b.label = st.key, st.label
     b:SetText(st.label)
-    b.receive = fs(col3, "GameFontHighlightSmall", "CENTER")
-    b.receive:SetPoint("TOP", b, "BOTTOM", 0, -2)
-    b:SetScript("OnClick", function()
-      local reasons = {
-        fast = GW.SellFastText(),
-        typical = L["Typical: 1c under the typical price."],
-        patient = L["Patient: about 10% above the typical price; best posted when supply is low."],
-      }
-      chooseStrategy(st.key, reasons[st.key])
+    b:SetScript("OnClick", function() chooseStrategy(st.key, REASONS[st.key]()) end)
+    if b.SetMotionScriptsWhileDisabled then b:SetMotionScriptsWhileDisabled(true) end
+    b:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_TOP")
+      GameTooltip:SetText(REASONS[st.key](), 1, 1, 1, 1, true)
+      GameTooltip:Show()
     end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
     panel.stratButtons[i] = b
   end
-  panel.why = fs(col3, "GameFontDisableSmall", "LEFT")
-  panel.why:SetPoint("TOPLEFT", 0, -82)
-  panel.why:SetWidth(316)
+  panel.why = UI.Text(col3, "GameFontHighlightSmall", "muted", "LEFT")
+  panel.why:SetPoint("TOPLEFT", 12, -74)
+  panel.why:SetWidth(aW - 22)
+  panel.warnBox = UI.Flat(CreateFrame("Frame", nil, col3), T.warnBg, T.warnBorder)
+  panel.warnBox:SetPoint("TOPLEFT", panel.why, "BOTTOMLEFT", 0, -6)
+  panel.warnBox:SetWidth(aW - 22)
+  panel.warn = UI.Text(panel.warnBox, "GameFontHighlightSmall", "warnText", "LEFT")
+  panel.warn:SetPoint("TOPLEFT", 8, -7)
+  panel.warn:SetWidth(aW - 38)
+  panel.warnBox:Hide()
 
-  local pl = fs(col3, "GameFontNormalSmall", "LEFT")
-  pl:SetPoint("TOPLEFT", 0, -116)
-  pl:SetText(L["Price per item (or type your own)"])
+  -- price, quantity, duration
+  local v1 = UI.Rule(col3)
+  v1:SetPoint("TOPLEFT", aW, -1)
+  v1:SetPoint("BOTTOMLEFT", aW, 1)
+  v1:SetWidth(1)
+  local bx = aW + 12
+  local pl = UI.Text(col3, "GameFontNormalSmall", "label", "LEFT")
+  pl:SetPoint("TOPLEFT", bx, -12)
+  pl:SetText(L["Price each"])
   if MoneyInputFrame_SetCopper and MoneyInputFrame_GetCopper then
     panel.money = CreateFrame("Frame", "GoldwrightSellPrice", col3, "MoneyInputFrameTemplate")
     UI.SkinMoney("GoldwrightSellPrice")
-    panel.money:SetPoint("TOPLEFT", 4, -132)
+    panel.money:SetPoint("TOPLEFT", bx + 4, -28)
     if MoneyInputFrame_SetOnValueChangedFunc then
       MoneyInputFrame_SetOnValueChangedFunc(panel.money, function()
         -- The money boxes report changes a moment after we set them, so only a price that differs
@@ -1375,7 +1576,7 @@ local function createPanel()
         if not state.settingPrice and getUnitPrice() ~= chosen and getUnitPrice() > 0 then
           state.strategy = nil
           state.typed = true
-          panel.why:SetText(L["Your own price."])
+          setWhy(L["Your own price."])
         end
         recalc()
       end)
@@ -1383,7 +1584,7 @@ local function createPanel()
   else
     panel.copperBox = UI.NewEditBox(col3)
     panel.copperBox:SetSize(120, 22)
-    panel.copperBox:SetPoint("TOPLEFT", 6, -132)
+    panel.copperBox:SetPoint("TOPLEFT", bx + 6, -28)
     panel.copperBox:SetAutoFocus(false)
     panel.copperBox:SetScript("OnTextChanged", function(_, userInput)
       if userInput then
@@ -1417,16 +1618,24 @@ local function createPanel()
     end
   end
 
-  local ql = fs(col3, "GameFontNormalSmall", "LEFT")
-  ql:SetPoint("TOPLEFT", 0, -162)
+  local ql = UI.Text(col3, "GameFontNormalSmall", "label", "LEFT")
+  ql:SetPoint("TOPLEFT", bx, -62)
   ql:SetText(L["Quantity"])
   panel.qty = UI.NewEditBox(col3)
-  panel.qty:SetSize(50, 22)
-  panel.qty:SetPoint("TOPLEFT", 6, -178)
+  panel.qty:SetSize(46, 20)
+  panel.qty:SetPoint("TOPLEFT", bx + 6, -78)
   panel.qty:SetAutoFocus(false)
   panel.qty:SetNumeric(true)
   panel.qty:SetMaxLetters(5)
-  panel.qty:SetScript("OnTextChanged", recalc)
+  panel.qty:SetScript("OnTextChanged", function(self, userInput)
+    -- more than you have: the box shows what you have (that is what posts)
+    local n, g = tonumber(self:GetText()), state.sel
+    if userInput and n and g and g.isCommodity and n > g.count then
+      self:SetText(tostring(g.count))
+      return -- SetText runs this again
+    end
+    recalc()
+  end)
   panel.qty:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
   if GW.Gamepad then
     GW.Gamepad.Adjustable(panel.qty, {
@@ -1438,20 +1647,21 @@ local function createPanel()
       enabled = function() return state.sel ~= nil and panel.qty:IsEnabled() end,
     })
   end
-  panel.allButton = UI.Button(col3, L["All"], 44, 22)
+  panel.allButton = UI.Button(col3, L["All"], 38, 20)
   panel.allButton:SetPoint("LEFT", panel.qty, "RIGHT", 6, 0)
   panel.allButton:SetScript("OnClick", function()
     if state.sel then panel.qty:SetText(tostring(state.sel.count)) end
   end)
 
-  local dl = fs(col3, "GameFontNormalSmall", "LEFT")
-  dl:SetPoint("TOPLEFT", 150, -162)
+  local dx = bx + 108
+  local dl = UI.Text(col3, "GameFontNormalSmall", "label", "LEFT")
+  dl:SetPoint("TOPLEFT", dx, -62)
   dl:SetText(L["Duration"])
   panel.durButtons = {}
   for i, d in ipairs(DURATIONS) do
-    local b = UI.TabButton(col3, d.label, 50, 22)
+    local b = UI.ToggleButton(col3, d.label, 36, 20)
     b.idx = d.idx
-    b:SetPoint("TOPLEFT", 150 + (i - 1) * 54, -178)
+    b:SetPoint("TOPLEFT", dx + (i - 1) * 39, -78)
     b:SetScript("OnClick", function()
       setDuration(d.idx)
       recalc()
@@ -1460,48 +1670,87 @@ local function createPanel()
   end
   setDuration(GW.Opt("duration"))
 
-  panel.warn = fs(col3, "GameFontHighlightSmall", "LEFT")
-  panel.warn:SetPoint("TOPLEFT", 0, -212)
-  panel.warn:SetWidth(316)
+  panel.toast = UI.Text(col3, "GameFontHighlightSmall", "muted", "LEFT")
+  panel.toast:SetPoint("TOPLEFT", bx, -112)
+  panel.toast:SetWidth(bW - 24)
 
-  local y = -252
-  for i = 1, 5 do
-    local l = fs(col3, i == 3 and "GameFontHighlight" or "GameFontHighlightSmall", "LEFT")
-    l:SetPoint("TOPLEFT", 0, y)
-    local r = fs(col3, i == 3 and "GameFontNormal" or "GameFontHighlightSmall", "RIGHT")
-    r:SetPoint("TOPRIGHT", -4, y)
-    if i ~= 3 then setColor(l, GREY) end
-    panel["r" .. i .. "L"], panel["r" .. i .. "R"] = l, r
-    y = y - (i == 2 and 24 or 18)
+  -- what you get, and Post
+  local v2 = UI.Rule(col3)
+  v2:SetPoint("TOPLEFT", aW + bW, -1)
+  v2:SetPoint("BOTTOMLEFT", aW + bW, 1)
+  v2:SetWidth(1)
+  local cx = aW + bW + 12
+  local cW = width - cx - 12
+  panel.youGetLabel = UI.Text(col3, "GameFontNormalSmall", "label", "LEFT")
+  panel.youGetLabel:SetPoint("TOPLEFT", cx, -12)
+  panel.youGet = UI.Text(col3, YOU_GET_FONT, "text", "LEFT")
+  panel.youGet:SetPoint("TOPLEFT", cx, -29)
+  panel.youGetWidth = cW
+  panel.deposit = UI.Text(col3, "GameFontHighlightSmall", "faint", "LEFT")
+  panel.deposit:SetPoint("TOPLEFT", cx, -58)
+  panel.deposit:SetWidth(cW)
+  panel.sellTime = UI.Text(col3, "GameFontHighlightSmall", "faint", "LEFT")
+  panel.sellTime:SetPoint("TOPLEFT", cx, -73)
+  panel.sellTime:SetWidth(cW)
+  panel.post = UI.PrimaryButton(col3, L["Post"], cW, 30, postSelected)
+  panel.post:SetPoint("BOTTOMLEFT", cx, 12)
+  -- a long item name is cut with "..." to fit the button; the tooltip shows the whole label
+  local label = panel.post:GetFontString()
+  if label then
+    label:SetWidth(cW - 16)
+    label:SetWordWrap(false)
   end
-  local line = col3:CreateTexture(nil, "ARTWORK")
-  line:SetColorTexture(1, 1, 1, 0.1)
-  line:SetPoint("TOPLEFT", 0, -290)
-  line:SetSize(314, 1)
+  panel.post:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText(self:GetText() or "", 1, 1, 1)
+    GameTooltip:AddLine(L["One listing per click · then the next item is ready"], 0.8, 0.8, 0.8, true)
+    GameTooltip:Show()
+  end)
+  panel.post:SetScript("OnLeave", function() GameTooltip:Hide() end)
+end
 
-  panel.toast = fs(col3, "GameFontHighlightSmall", "LEFT")
-  panel.toast:SetPoint("BOTTOMLEFT", 0, 58)
-  panel.toast:SetWidth(314)
-  panel.post = UI.Button(col3, L["Post"], 314, 30)
-  panel.post:SetPoint("BOTTOMLEFT", 0, 22)
-  panel.post:SetScript("OnClick", postSelected)
-  local postNote = fs(col3, "GameFontDisableSmall", "RIGHT")
-  postNote:SetPoint("TOPRIGHT", panel.post, "BOTTOMRIGHT", 0, -4)
-  postNote:SetText(L["One listing per click · then the next item is ready"])
+--- Builds the panel window: frame, tab bar, Settings and Sales, the Sell tab's three cards and the
+--- status bar. The panel starts hidden.
+local function createPanel()
+  T = UI.Tokens()
+  local top = buildFrame()
 
-  col2:Hide()
-  col3:Hide()
+  local inset = panel.Inset or panel
+  if panel.Inset then
+    panel.Inset:ClearAllPoints()
+    panel.Inset:SetPoint("TOPLEFT", 8, top)
+    panel.Inset:SetPoint("BOTTOMRIGHT", -8, 26)
+  end
+  panel.inset = inset
+  local view = CreateFrame("Frame", nil, inset)
+  view:SetAllPoints()
+  panel.sellView = view
 
-  panel.status = fs(panel, "GameFontDisableSmall", "LEFT")
-  panel.status:SetPoint("BOTTOMLEFT", 14, 10)
+  buildBags(view)
+  local market = UI.Card(view)
+  market:SetPoint("TOPLEFT", BAGS_W + 14, -6)
+  market:SetPoint("TOPRIGHT", -6, -6)
+  market:SetHeight(MARKET_H)
+  local listing = UI.Card(view)
+  listing:SetPoint("TOPLEFT", market, "BOTTOMLEFT", 0, -8)
+  listing:SetPoint("BOTTOMRIGHT", -6, 6)
+  panel.empty = UI.Text(view, "GameFontHighlight", "muted", "CENTER")
+  panel.empty:SetPoint("CENTER", market, "CENTER", 0, 0)
+  panel.empty:SetWidth(500)
+  panel.empty:SetText(L["Choose an item on the left to see its market and price it."])
+  buildMarket(market)
+  buildListing(listing)
+  panel.col2:Hide()
+  panel.col3:Hide()
 
-  panel:SetScript("OnShow", function()
+  -- HookScript, not SetScript: UI.Window hooks these too (raise, controller window list).
+  panel:HookScript("OnShow", function()
     state.rank = nil -- fresh value order for each visit to the auction house
-    renderStatus()
+    state.live = {} -- and data pack prices until each item is searched again
     local t = GW.activeTab
     showTab((t == "cancel" or t == "scan" or t == "shopping") and t or "sell")
   end)
-  panel:SetScript("OnHide", function()
+  panel:HookScript("OnHide", function()
     if GW.CancelView then GW.CancelView.Hide() end
     if GW.ScanView then GW.ScanView.Hide() end
     if GW.ShopView then GW.ShopView.Hide() end
@@ -1518,7 +1767,7 @@ local function createPanel()
       if state.sel then
         renderMarket()
         applyDefaultStrategy()
-        GW.SellCharts.Render(state.sel.itemID)
+        GW.SellCharts.Render(state.sel.itemID, state.sel.name)
       end
     end
   end)

@@ -87,12 +87,13 @@ GW.DEFAULTS = {
   abovePct = 150, -- ... and notes above this % (SELL-8)
   betterPct = 20, -- another house must net this % more (TT-6, SELL-9)
   -- selling
-  undercut = "1c", -- "1c" (1 copper under), "match" or "pct"
+  undercut = "match", -- Fast's price: "match" (same-price listings sell newest first, #15), "1c" or "pct"
   undercutPct = 5,
   duration = 3, -- 1 = 2 h, 2 = 8 h, 3 = 24 h
   autoShow = true, -- open Goldwright with the auction house
   craftAutoShow = true, -- open the Crafting panel with a profession window (off: /gw craft opens it)
   elvSkin = true, -- with ElvUI running, Goldwright's windows take its look (UI.Skin)
+  look = "blizzard", -- Goldwright's own look: "blizzard" (flat, like the game's windows) or "dark" (Skin.lua)
   -- bait detection (live listings in game; the data pack uses the server's fixed rule)
   bait = true,
   baitShare = 1,
@@ -503,6 +504,18 @@ function GW.ItemData(key)
   return any and out or nil
 end
 
+--- A comma list of base-36 numbers from the pack: "a,,1b" -> { 10, nil, 47 }.
+---@param s string
+---@return table<number, number> values nil entries = empty fields (no data)
+local function list36(s)
+  local out, i = {}, 0
+  for x in (s .. ","):gmatch("([^,]*),") do
+    i = i + 1
+    out[i] = n36(x)
+  end
+  return out
+end
+
 --- The 30 daily typical prices of an item in one house.
 ---@param key number|string item key
 ---@param side string house ("A", "H", "N")
@@ -511,12 +524,23 @@ end
 function GW.History(key, side)
   local s = GW.pack and GW.pack.hist and GW.pack.hist[key] and GW.pack.hist[key][side]
   if not s then return nil end
-  local out, i = {}, 0
-  for x in (s .. ","):gmatch("([^,]*),") do
-    i = i + 1
-    out[i] = n36(x)
-  end
-  return out, GW.pack.histFrom
+  return list36(s), GW.pack.histFrom
+end
+
+--- 30 days of sales and supply of an item in one house, on the same days as GW.History. Units per
+--- day: `proven` sold (partial buys and stacks swept below them), `est` sold (all early removals that
+--- look like sales; it includes `proven` and is never below it), and the average `listed`. Sales
+--- are scaled to a full day; days the server saw too little of are nil. Packs built before
+--- 2026-11-21 have no daily series: nil.
+---@param key number|string item key
+---@param side string house ("A", "H", "N")
+---@return { proven: table<number, number>, est: table<number, number>, listed: table<number, number> }|nil daily index 1 = the day starting at pack.histFrom
+---@return number|nil histFrom server time of day 1
+function GW.Daily(key, side)
+  local s = GW.pack and GW.pack.daily and GW.pack.daily[key] and GW.pack.daily[key][side]
+  if not s then return nil end
+  local p, e, u = strsplit("/", s)
+  return { proven = list36(p), est = list36(e or ""), listed = list36(u or "") }, GW.pack.histFrom
 end
 
 --- How many of an item fit in one stack, from the client's item data (nil when not loaded yet).
@@ -557,15 +581,7 @@ function GW.Hours(key, side)
   local s = GW.pack and GW.pack.hours and GW.pack.hours[key] and GW.pack.hours[key][side]
   if not s then return nil end
   local p, u = strsplit("/", s)
-  local function list(str)
-    local out, i = {}, 0
-    for x in (str .. ","):gmatch("([^,]*),") do
-      i = i + 1
-      out[i] = n36(x)
-    end
-    return out
-  end
-  return { prices = list(p), units = list(u or "") }
+  return { prices = list36(p), units = list36(u or "") }
 end
 
 --- What a vendor pays for one, from the client's item data.

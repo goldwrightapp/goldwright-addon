@@ -291,13 +291,10 @@ local function build()
   number(L["...and more than"], "baitGap", 5, 90, L["% below the 5% depth price"], string.format(L["default %d"], 30))
   note(L["Applies to live listings in game. Data pack prices use the server's fixed rule (1%, 30%)."], 20)
 
-  heading(L["Launcher"])
-  local mm =
-    check(L["Minimap button"], "minimap", L["Also in the add-on menu next to the minimap, when the game has one."])
-  mm:SetScript("OnClick", function(self)
-    if GW.SetMinimapShown then GW.SetMinimapShown(self:GetChecked() and true or false) end
-  end)
-  table.insert(controls, function() mm:SetChecked(GW.MinimapShown and GW.MinimapShown() or false) end)
+  -- Goldwright's own look (Skin.lua): Blizzard flat or Goldwright dark.
+  heading(L["Look"])
+  choice(L["Window look"], "look", { { "blizzard", L["Blizzard"] }, { "dark", L["Goldwright dark"] } })
+  note(L["Takes effect after /reload. With ElvUI or EllesmereUI, their look comes first."], 20)
   -- Only with ElvUI installed: Goldwright's windows take ElvUI's look (UI.Skin in UI.lua).
   if type(ElvUI) == "table" then
     check(
@@ -306,6 +303,14 @@ local function build()
       L["Goldwright's windows, buttons and boxes use ElvUI's style. Takes effect after /reload."]
     )
   end
+
+  heading(L["Launcher"])
+  local mm =
+    check(L["Minimap button"], "minimap", L["Also in the add-on menu next to the minimap, when the game has one."])
+  mm:SetScript("OnClick", function(self)
+    if GW.SetMinimapShown then GW.SetMinimapShown(self:GetChecked() and true or false) end
+  end)
+  table.insert(controls, function() mm:SetChecked(GW.MinimapShown and GW.MinimapShown() or false) end)
 
   heading(L["Data"])
   local house = fs(content, "GameFontHighlight", "LEFT")

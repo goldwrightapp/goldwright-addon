@@ -73,6 +73,11 @@ end
 function UI.NewButton(parent) return UI.Skin("button", CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")) end
 --- A button that works as a tab or a toggle (UI.SetSelected shows which one is chosen).
 function UI.NewTabButton(parent) return UI.Skin("tab", CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")) end
+--- A button for a choice among a few (2h / 8h / 24h, 7d / 30d): boxed like a button in Goldwright
+--- dark, a tab in other add-ons' looks (UI.SetSelected shows which one is chosen).
+function UI.NewToggleButton(parent)
+  return UI.Skin("toggle", CreateFrame("Button", nil, parent, "UIPanelButtonTemplate"))
+end
 function UI.NewEditBox(parent) return UI.Skin("editbox", CreateFrame("EditBox", nil, parent, "InputBoxTemplate")) end
 --- A red X button. It hides its parent itself: the template's own click goes through the game's
 --- panel manager (HideUIPanel), which add-on code can't use in combat, so the X did nothing until
@@ -104,6 +109,21 @@ function UI.Button(parent, label, width, height, onClick)
   return b
 end
 
+--- UI.NewToggleButton with a label, size and click (a choice among a few, like 2h / 8h / 24h).
+---@param parent table frame to create it on
+---@param label string button text
+---@param width number in pixels
+---@param height number in pixels
+---@param onClick? function OnClick script
+---@return table button the new button
+function UI.ToggleButton(parent, label, width, height, onClick)
+  local b = UI.NewToggleButton(parent)
+  b:SetSize(width, height)
+  b:SetText(label)
+  if onClick then b:SetScript("OnClick", onClick) end
+  return b
+end
+
 --- UI.Button for a tab or a toggle: the same button, styled as a tab in another add-on's look.
 ---@param parent table frame to create it on
 ---@param label string button text
@@ -115,6 +135,232 @@ function UI.TabButton(parent, label, width, height, onClick)
   local b = UI.NewTabButton(parent)
   b:SetSize(width, height)
   b:SetText(label)
+  if onClick then b:SetScript("OnClick", onClick) end
+  return b
+end
+
+--- The main button of a view (Post): red like the others in the Blizzard look, gold in Goldwright
+--- dark. The caller places it.
+---@param parent table frame to create it on
+---@param label string button text
+---@param width number in pixels
+---@param height number in pixels
+---@param onClick? function OnClick script
+---@return table button the new button
+function UI.PrimaryButton(parent, label, width, height, onClick)
+  local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+  b.gwPrimary = true
+  UI.Skin("primary", b)
+  b:SetSize(width, height)
+  b:SetText(label)
+  if onClick then b:SetScript("OnClick", onClick) end
+  return b
+end
+
+---------------------------------------------------------------------------
+-- Goldwright's own drawing, in the look's colours (UI.Tokens, Skin.lua)
+---------------------------------------------------------------------------
+--- Fills a frame with a flat colour and an optional 1-pixel border, drawn under everything else on
+--- it. Called again, it only changes the colours. `x` and `y` move the edges in (positive) or out
+--- (negative) on the left and right / top and bottom, for widgets whose art reaches past their frame.
+---@param f table frame
+---@param bg number[] {r, g, b[, a]}
+---@param border? number[] {r, g, b[, a]}, nil for none
+---@param x? number
+---@param y? number
+---@return table f
+function UI.Flat(f, bg, border, x, y)
+  x, y = x or 0, y or 0
+  if not f.gwFlat then
+    local bgTex = f:CreateTexture(nil, "BACKGROUND", nil, -8)
+    bgTex:SetPoint("TOPLEFT", x, -y)
+    bgTex:SetPoint("BOTTOMRIGHT", -x, y)
+    local edges = {}
+    for i, e in ipairs({ { "TOPLEFT", "TOPRIGHT" }, { "BOTTOMLEFT", "BOTTOMRIGHT" } }) do
+      local t = f:CreateTexture(nil, "BORDER", nil, -8)
+      t:SetPoint(e[1], bgTex, e[1])
+      t:SetPoint(e[2], bgTex, e[2])
+      t:SetHeight(1)
+      edges[i] = t
+    end
+    for i, e in ipairs({ { "TOPLEFT", "BOTTOMLEFT" }, { "TOPRIGHT", "BOTTOMRIGHT" } }) do
+      local t = f:CreateTexture(nil, "BORDER", nil, -8)
+      t:SetPoint(e[1], bgTex, e[1])
+      t:SetPoint(e[2], bgTex, e[2])
+      t:SetWidth(1)
+      edges[i + 2] = t
+    end
+    f.gwFlat = { bg = bgTex, edges = edges }
+  end
+  local flat = f.gwFlat
+  flat.bg:SetColorTexture(bg[1], bg[2], bg[3], bg[4] or 1)
+  for _, t in ipairs(flat.edges) do
+    if border then
+      t:SetColorTexture(border[1], border[2], border[3], border[4] or 1)
+      t:Show()
+    else
+      t:Hide()
+    end
+  end
+  return f
+end
+
+--- A card: a panel of its own with the look's background and border. The caller places it.
+---@param parent table
+---@return table frame
+function UI.Card(parent)
+  local T = UI.Tokens()
+  return UI.Flat(CreateFrame("Frame", nil, parent), T.card, T.cardBorder)
+end
+
+--- A card's caption at TOPLEFT x, y of `parent`: gold in the Blizzard look; in Goldwright dark
+--- small and muted after a gold square.
+---@param parent table
+---@param text string
+---@param x number
+---@param y number
+---@return table fontString
+function UI.Caption(parent, text, x, y)
+  local T = UI.Tokens()
+  local c = UI.FontString(parent, T.captionMark and "GameFontNormalSmall" or "GameFontNormal", "LEFT")
+  if T.captionMark then
+    local mark = parent:CreateTexture(nil, "ARTWORK")
+    mark:SetSize(5, 5)
+    mark:SetPoint("TOPLEFT", x, y - 4)
+    mark:SetColorTexture(T.gold[1], T.gold[2], T.gold[3], 1)
+    c:SetPoint("TOPLEFT", x + 11, y)
+  else
+    c:SetPoint("TOPLEFT", x, y)
+  end
+  UI.SetColor(c, T.caption)
+  c:SetText(text)
+  return c
+end
+
+--- A font string in one of the look's text colours ("text", "muted", "faint", "label", "gold").
+---@param parent table
+---@param template? string font object (default "GameFontHighlightSmall")
+---@param tone? string token name (default "text")
+---@param justify? string
+---@return table fontString
+function UI.Text(parent, template, tone, justify)
+  local f = UI.FontString(parent, template or "GameFontHighlightSmall", justify)
+  UI.SetColor(f, UI.Tokens()[tone or "text"])
+  return f
+end
+
+--- A 1-pixel line in the look's divider colour (`tone`: "line", default, or "rowLine"). The caller
+--- places it (two points, or one point and a size).
+---@param parent table
+---@param tone? string
+---@return table texture
+function UI.Rule(parent, tone)
+  local c = UI.Tokens()[tone or "line"]
+  local t = parent:CreateTexture(nil, "BORDER")
+  t:SetColorTexture(c[1], c[2], c[3], c[4] or 1)
+  return t
+end
+
+--- A chip: a short label on a coloured background (UI.SetChip fills it). Anchor it by its TOPLEFT.
+---@param parent table
+---@return table frame chip with .text
+function UI.Chip(parent)
+  local chip = CreateFrame("Frame", nil, parent)
+  chip:SetHeight(14)
+  chip.bg = chip:CreateTexture(nil, "BACKGROUND")
+  chip.bg:SetAllPoints()
+  chip.text = UI.FontString(chip, "GameFontHighlightSmall", "LEFT")
+  chip.text:SetPoint("LEFT", 5, 0)
+  chip:Hide()
+  return chip
+end
+
+--- Shows a chip with `text` in the colours of `kind` ("blue", "orange" or "grey"), or hides it.
+---@param chip table UI.Chip
+---@param text? string nil or "" hides it
+---@param kind? string
+function UI.SetChip(chip, text, kind)
+  if not text or text == "" then
+    chip:Hide()
+    return
+  end
+  local c = UI.Tokens().chips[kind or "grey"] or UI.Tokens().chips.grey
+  chip.bg:SetColorTexture(c[1][1], c[1][2], c[1][3], c[1][4] or 1)
+  chip.text:SetText(text)
+  UI.SetColor(chip.text, c[2])
+  chip:SetWidth(math.floor((chip.text:GetStringWidth() or 0) + 10.5))
+  chip:Show()
+end
+
+--- A horizontal bar for a share (quantity of a listing): a track and a fill. Anchor it by its LEFT.
+---@param parent table
+---@param width number
+---@param height number
+---@return table frame bar with .fill
+function UI.Bar(parent, width, height)
+  local T = UI.Tokens()
+  local bar = CreateFrame("Frame", nil, parent)
+  bar:SetSize(width, height)
+  bar.track = bar:CreateTexture(nil, "BACKGROUND")
+  bar.track:SetAllPoints()
+  bar.track:SetColorTexture(T.barTrack[1], T.barTrack[2], T.barTrack[3], 1)
+  bar.fill = bar:CreateTexture(nil, "ARTWORK")
+  bar.fill:SetPoint("TOPLEFT")
+  bar.fill:SetPoint("BOTTOMLEFT")
+  bar.fill:SetColorTexture(T.barFill[1], T.barFill[2], T.barFill[3], 1)
+  bar.width = width
+  return bar
+end
+
+--- Fills a bar to `share` (0..1; anything shown gets at least 2 pixels).
+---@param bar table UI.Bar
+---@param share number
+function UI.SetBar(bar, share)
+  share = math.max(0, math.min(1, share or 0))
+  bar.fill:SetWidth(math.max(2, math.floor(bar.width * share + 0.5)))
+  bar.share = share
+end
+
+--- A window tab (Sell, My Auctions, ...). In the Blizzard look a tab of its own: a dark tab with a
+--- gold label, the selected one lighter with a gold line along its top. In every other look the
+--- look's own tab (UI.TabButton). Its width follows the label. UI.SetSelected marks the open one.
+---@param parent table
+---@param label string
+---@param height number
+---@param onClick? function
+---@return table button
+function UI.WindowTab(parent, label, height, onClick)
+  if UI.LookName() ~= "blizzard" then
+    local b = UI.TabButton(parent, label, 80, height, onClick)
+    local text = b:GetFontString()
+    b:SetWidth(math.max(60, math.floor((text and text:GetStringWidth() or 40) + 28)))
+    return b
+  end
+  local T = UI.Tokens()
+  local b = CreateFrame("Button", nil, parent)
+  b:SetHeight(height)
+  b:SetNormalFontObject("GameFontNormal")
+  b:SetHighlightFontObject("GameFontHighlight")
+  b:SetDisabledFontObject("GameFontDisable")
+  b:SetText(label)
+  local text = b:GetFontString()
+  b:SetWidth(math.max(60, math.floor((text and text:GetStringWidth() or 40) + 36)))
+  UI.Flat(b, { 0.10, 0.094, 0.082, 1 }, T.cardBorder)
+  local lit = b:CreateTexture(nil, "HIGHLIGHT")
+  lit:SetAllPoints()
+  lit:SetColorTexture(1, 1, 1, 0.05)
+  b.gwTop = b:CreateTexture(nil, "OVERLAY")
+  b.gwTop:SetPoint("TOPLEFT", 1, -1)
+  b.gwTop:SetPoint("TOPRIGHT", -1, -1)
+  b.gwTop:SetHeight(2)
+  b.gwTop:SetColorTexture(0.69, 0.553, 0.298, 1)
+  b.gwTop:Hide()
+  --- Selected: lighter, a gold line along the top and a white label.
+  b.gwSetSelected = function(on)
+    UI.Flat(b, on and { 0.20, 0.18, 0.15, 1 } or { 0.10, 0.094, 0.082, 1 }, T.cardBorder)
+    b.gwTop:SetShown(on)
+    b:SetNormalFontObject(on and "GameFontHighlight" or "GameFontNormal")
+  end
   if onClick then b:SetScript("OnClick", onClick) end
   return b
 end
