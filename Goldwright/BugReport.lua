@@ -99,7 +99,20 @@ function GW.BugReport()
     "Goldwright " .. GW.Version(),
     "Language: " .. (GW.LOCALE or "?"),
     string.format("WoW %s (%s, interface %s)", tostring(version), tostring(build), tostring(toc)),
-    string.format('%s · %s · %s (realm "%s")', h.region, h.ruleset, GW.HOUSE_NAMES[h.side] or "?", h.realm or "?"),
+    string.format(
+      '%s · %s · %s (realm "%s", server %s; ruleset from %s)',
+      h.region,
+      h.ruleset,
+      GW.HOUSE_NAMES[h.side] or "?",
+      h.realm or "?",
+      h.server or "?",
+      ({
+        settings = "Settings",
+        rules = "the game's rules",
+        chosen = "this character's answer to the popup",
+        default = "nothing: assumed",
+      })[h.rulesetFrom or ""] or "?"
+    ),
     "Auction house open: " .. (open and (GW.HOUSE_NAMES[GW.AuctionSide and GW.AuctionSide() or h.side] or "?") or "no"),
     pack and string.format(
       "Data %s %s: snapshot %s, built %s",

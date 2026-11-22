@@ -263,7 +263,8 @@ local visit
 --- Which character's mailbox this is ("Name-Realm"): each character has its own.
 local function mailboxKey()
   local name = UnitName and UnitName("player") or "?"
-  local realm = (GetNormalizedRealmName and GetNormalizedRealmName()) or (GetRealmName and GetRealmName()) or ""
+  -- Stable across Forever's realm rename (build 71037 blanks the realm name, #28).
+  local realm = GW.RealmKey()
   return name .. "-" .. realm
 end
 

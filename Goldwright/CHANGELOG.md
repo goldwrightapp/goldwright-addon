@@ -1,12 +1,11 @@
 # Goldwright changelog
 
-## 0.7.5
+## 0.7.6
 
-Correct Sell tab prices for random-suffix gear, clearer settings for other auction houses, and some of your requests from Reddit and Discord: Alt-click to sell, bag sorting and a smaller window.
+Urgent fix for PvP and Roleplay players: since Forever's latest client update, Goldwright could show Normal prices on every realm type.
 
-- **Fix: Sell tab prices for "… of Fire Protection" and other random-suffix gear.** Every suffix of an item (Willow Cape of Fire Protection, of the Falcon, of Nature Protection…) shares one item, and the auction house's own Sell window searches for all of them at once. Goldwright took those results as its own, so the cheapest listings and the suggested price could come from a different suffix. It now only counts listings of your exact suffix, whatever the auction house searches for at the same time. My Auctions' undercut check follows the same rule. Tooltips and the website were never affected. ([#25](https://github.com/goldwrightapp/goldwright-addon/issues/25))
-- **Other auction houses, one box each:** Settings has a new **Other auction houses** group with **Alliance prices**, **Horde prices** and **Blackwater prices**. Your own faction's box is always on and greyed out, so each box always means the same house on every character. **Hint when another house pays more** is its own box. They now apply everywhere: tooltips, the line under the Sell tab's price history, the Sell tab's "Blackwater +X%" tags and the Crafting panel's hints. Your old choice carries over. ([#24](https://github.com/goldwrightapp/goldwright-addon/issues/24))
-- **Alt-click to sell:** with the Sell tab open, Alt-click an item in your bags to select it there with its prices. Nothing is posted until you click Post. ([#21](https://github.com/goldwrightapp/goldwright-addon/issues/21))
-- **Sort your bags:** click **Sort: Value** above your bags to switch between Value, Name, Category and Quantity. Goldwright remembers your choice, and the list still stays put while you post. ([#22](https://github.com/goldwrightapp/goldwright-addon/issues/22))
-- **Window size:** Settings > Look > **Window size** shrinks every Goldwright window to 60–90%, and windows now stay on screen. A first step for small screens and the Steam Deck; more to come. ([#23](https://github.com/goldwrightapp/goldwright-addon/issues/23))
-- **Best time to post** now says what the chart measures: "Fewest listed 4pm–8pm (your time)", instead of promising faster sales. ([#20](https://github.com/goldwrightapp/goldwright-addon/issues/20))
+- **Fix: prices from the right auction house again.** Forever's update on 20–21 November hides the realm from add-ons on purpose (it stops layer-jumping add-ons). Goldwright used the realm's name to know your realm type, so PvP, Roleplay and RP-PvP players were silently shown Normal prices, and players who had switched the Normal data off saw no prices at all. Goldwright now reads your realm type straight from the game's rules (whether PvP and Roleplay rules apply), which the update doesn't hide, so it's right from the moment you log in. ([#28](https://github.com/goldwrightapp/goldwright-addon/issues/28))
+- **Your choice wins:** Settings › Ruleset still sets the realm type by hand. And if a future update ever hides the game's rules too, Goldwright asks you once (**Normal · PvP · RP · RP-PvP**) and remembers the answer for that character.
+- **Your sales history and level plans** stay with your character after the update; they were filed under the realm's old name.
+- **`/gw bug`** now shows where your realm type came from, to help with reports.
+- **Bug reports keep the auction house lines:** fights are only noted in the report's log while a Goldwright window is open, so a questing session no longer pushes them out.

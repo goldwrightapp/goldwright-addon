@@ -342,25 +342,105 @@ end
 ---@field realm string realm name
 ---@field side string "A" (Alliance) or "H" (Horde)
 ---@field packKey string data pack key, e.g. "US_RoleplayPvP"
+---@field rulesetFrom string where the ruleset came from (Ruleset.lua): "settings", "rules" (the
+--- game's rules), "chosen" (this character's answer to the popup) or "default" (Normal, a guess)
+---@field server string|nil the server number in the character's GUID (display only)
 
---- Detects the player's house: region, ruleset (from the realm name suffix, e.g.
---- "CAMWOW US1 Realm 5 PvE", unless overridden in settings) and faction. Stores it in GW.house.
+--- The ruleset a realm name ends with ("CAMWOW US1 Realm 5 PvE" -> "Normal"), nil when it doesn't
+--- say. Also reads names without spaces (GetNormalizedRealmName: "CAMWOWUS1Realm5RPPvP").
+---@param realm string
+---@return string|nil ruleset
+local function rulesetOfRealm(realm)
+  local r = RULESET_BY_SUFFIX[realm:match("(%S+)%s*$") or ""]
+  if r then return r end
+  for _, suffix in ipairs({ "RPPvP", "RP-PvP", "PvP", "PvE", "RP" }) do
+    if realm:sub(-#suffix) == suffix then return RULESET_BY_SUFFIX[suffix] end
+  end
+  return nil
+end
+
+-- Since Forever 1.60.1 "Live Update 2" (client build 71037, 2026-11-20) the game hides the realm
+-- from add-ons on purpose (against layer hopping): GetRealmName() and GetNormalizedRealmName()
+-- return "", GetRealmID() 0. UnitFullName's second value is the character's surname on Forever
+-- ("Bomo", "Stillwater"), not a realm. The ruleset comes from Ruleset.lua (goldwright-addon #28).
+
+--- The realm's name, "" when the game hides it (always on Forever since build 71037).
+---@return string
+function GW.RealmName()
+  local r = (GetRealmName and GetRealmName()) or ""
+  if r == "" and GetNormalizedRealmName then r = GetNormalizedRealmName() or "" end
+  return r
+end
+
+--- The server number in the character's GUID ("Player-6923-01C5CB00" -> "6923"), for display.
+---@return string|nil
+local function serverId()
+  local guid = UnitGUID and UnitGUID("player")
+  return type(guid) == "string" and guid:match("^Player%-(%d+)%-") or nil
+end
+
+--- The realm this character's data was saved under before build 71037, from the "Name-Realm" keys
+--- of the ledger's mailboxes and the level plans ("Bomo-CAMWOWUS1Realm5PvE"). Only a realm whose
+--- name says its ruleset, and only when the name is on one such realm. nil otherwise.
+---@param name string|nil character name
+---@return string|nil realm
+local function oldRealmOf(name)
+  if not (GoldwrightDB and name and name ~= "") then return nil end
+  local prefix = "^" .. name:gsub("%p", "%%%0") .. "%-([^:]+)"
+  local found
+  local function look(key)
+    local r = type(key) == "string" and key:match(prefix)
+    if r and r ~= "" and rulesetOfRealm(r) then
+      if found == nil then
+        found = r
+      elseif found ~= r then
+        found = false -- the same name on two realms: can't tell which
+      end
+    end
+  end
+  for k in pairs(GoldwrightDB.levelPlans or {}) do
+    look(k)
+  end
+  for k in pairs((GoldwrightDB.ledger or {}).inbox or {}) do
+    look(k)
+  end
+  return found or nil
+end
+
+--- The realm part of this character's "Name-Realm" keys (ledger mailboxes, level plans), stable
+--- across build 71037: the normalized realm name when the game still gives one, else the realm the
+--- character's data was saved under before, else "" (the stand-in names may change).
+---@return string
+function GW.RealmKey()
+  local r = GetNormalizedRealmName and GetNormalizedRealmName() or ""
+  if r ~= "" then return r end
+  return oldRealmOf(UnitName and UnitName("player")) or ""
+end
+
+--- Detects the player's house: region, ruleset (Ruleset.lua) and faction. Stores it in GW.house.
 ---@return GoldwrightHouse house
 function GW.DetectHouse()
   local region = (GetCurrentRegionName and GetCurrentRegionName()) or "US"
-  local realm = GetRealmName() or ""
-  local suffix = realm:match("(%S+)%s*$") or ""
-  local ruleset = (GoldwrightDB and GoldwrightDB.rulesetOverride) or RULESET_BY_SUFFIX[suffix] or "Normal"
+  local ruleset, from = "Normal", "default"
+  if GW.DetermineRuleset then
+    ruleset, from = GW.DetermineRuleset(region)
+  end -- Ruleset.lua
   local faction = UnitFactionGroup("player")
   GW.house = {
     region = region,
     ruleset = ruleset,
-    realm = realm,
+    rulesetFrom = from,
+    realm = GW.RealmName(),
+    server = serverId(),
     side = faction == "Horde" and "H" or "A",
     packKey = region .. "_" .. ruleset:gsub("%s+", ""),
   }
   return GW.house
 end
+
+--- Whether the ruleset is a guess: no setting, the game's rules didn't answer, no popup answer.
+---@return boolean
+function GW.RulesetGuessed() return GW.House().rulesetFrom == "default" end
 
 --- The player's house (detected on first use).
 ---@return GoldwrightHouse house
@@ -758,6 +838,34 @@ function GW.OnLogin(fn) table.insert(GW.loginHandlers, fn) end
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
+events:RegisterEvent("PLAYER_ENTERING_WORLD")
+
+--- After login, when the ruleset is still a guess (#28): looks once more now the player is in the
+--- world; if it's still a guess, says so and shows the ruleset popup once (Ruleset.lua). Then
+--- reports a missing or old data pack.
+function GW.CheckHouse()
+  local before = GW.House().packKey
+  GW.DetectHouse()
+  if GW.house.packKey ~= before then
+    GW.ReloadPack()
+    GW.ApplyOptions()
+  end
+  local h = GW.house
+  if GW.RulesetGuessed() then
+    GW.Print(
+      L["Couldn't read your realm's ruleset, so Goldwright uses %s %s. Wrong? Pick yours in Settings › Ruleset."],
+      h.region,
+      h.ruleset
+    )
+    if not GW.RulesetAsked() and GW.ShowRulesetPopup then GW.ShowRulesetPopup() end
+  end
+  if not GW.pack then
+    GW.PrintPackProblem()
+  else
+    GW.PrintStaleNotice()
+  end
+end
+
 events:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
     GoldwrightDB = GoldwrightDB or {}
@@ -777,8 +885,14 @@ events:SetScript("OnEvent", function(_, event, arg1)
     end
     GW.ApplyOptions()
   elseif event == "PLAYER_LOGIN" then
+    GW.loginAt = GetTime and GetTime() or 0
     GW.DetectHouse()
-    if not GW.LoadPack() then
+    -- One line per login for bug reports: which ruleset, and where it came from (#28).
+    GW.Log("login: %s from %s", GW.house.packKey, GW.house.rulesetFrom)
+    local pack = GW.LoadPack()
+    if GW.RulesetGuessed() then
+      GW.houseCheckPending = true -- once more in the world, then ask (#28)
+    elseif not pack then
       GW.PrintPackProblem()
     else
       GW.PrintStaleNotice()
@@ -787,6 +901,9 @@ events:SetScript("OnEvent", function(_, event, arg1)
       local ok, err = pcall(fn)
       if not ok then GW.Print(L["startup error: %s"], tostring(err)) end
     end
+  elseif event == "PLAYER_ENTERING_WORLD" and GW.houseCheckPending then
+    GW.houseCheckPending = nil
+    GW.CheckHouse()
   end
 end)
 
@@ -975,7 +1092,10 @@ function GW.EscapeGoesBack(frame, on)
   end
 end
 
--- Combat start and end, with the windows open, for bug reports (#3, #6).
+-- Combat start and end while a Goldwright window is open, for bug reports (#3, #6). Fights with every
+-- window closed aren't logged: questing filled the 80-line log with them and pushed out the auction
+-- house lines (#29). The end of a logged fight is always logged.
+local combatLogged = false
 local combatLog = CreateFrame("Frame")
 pcall(combatLog.RegisterEvent, combatLog, "PLAYER_REGEN_DISABLED")
 pcall(combatLog.RegisterEvent, combatLog, "PLAYER_REGEN_ENABLED")
@@ -984,6 +1104,9 @@ combatLog:SetScript("OnEvent", function(_, event)
   for frame in pairs(escapeFrames) do
     if frame:IsShown() then shown[#shown + 1] = tostring(frame:GetName()) end
   end
+  local ends = event == "PLAYER_REGEN_ENABLED"
+  if #shown == 0 and not (ends and combatLogged) then return end
+  combatLogged = not ends
   GW.Log(
     "combat %s (open: %s)",
     event == "PLAYER_REGEN_DISABLED" and "starts" or "ends",

@@ -67,7 +67,8 @@ end
 ---@return string
 local function planKey(line)
   local name = UnitName and UnitName("player") or "?"
-  local realm = (GetNormalizedRealmName and GetNormalizedRealmName()) or (GetRealmName and GetRealmName()) or ""
+  -- Stable across Forever's realm rename (build 71037 blanks the realm name, #28).
+  local realm = GW.RealmKey()
   return name .. "-" .. realm .. ":" .. line
 end
 
