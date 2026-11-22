@@ -95,26 +95,28 @@ end
 --- still in your bags. We don't jump back to items you skipped.
 ---@param before table[] bag list (entries with `itemID`) in the order shown when you posted
 ---@param after table[] the bag list rescanned afterwards
----@param postedID number item id just posted
+---@param postedID number|string the posted row's key (item id, or "id/variant" for a random suffix)
 ---@param keepSame boolean|nil keep the same item selected while copies are left
 ---@return table|nil entry the entry from `after` to select, nil at the end of the list
 function GW.NextInQueue(before, after, postedID, keepSame)
+  -- Rows are told apart by key: each random suffix is its own row (#10); older callers give item ids.
+  local function id(g) return g.key or g.itemID end
   local present = {}
   for _, g in ipairs(after) do
-    present[g.itemID] = g
+    present[id(g)] = g
   end
   if keepSame and present[postedID] then return present[postedID] end
   local idx
   for i, g in ipairs(before) do
-    if g.itemID == postedID then
+    if id(g) == postedID then
       idx = i
       break
     end
   end
   if not idx then return nil end
   for i = idx + 1, #before do
-    local g = present[before[i].itemID]
-    if g and g.itemID ~= postedID then return g end
+    local g = present[id(before[i])]
+    if g and id(g) ~= postedID then return g end
   end
   return nil
 end

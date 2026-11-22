@@ -1426,9 +1426,11 @@ function Charts.OpenMarket(itemID, name, days)
   if not itemID then return end
   if not mw then buildMarket() end
   mw.itemID, mw.name, mw.tab, mw.days = itemID, name, "price", days or 30
-  local icon = C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(itemID)
+  -- itemID can be a random suffix's pack key ("4239:1015", #10): the icon is the base item's
+  local baseID = tonumber(tostring(itemID):match("^%d+"))
+  local icon = C_Item and C_Item.GetItemIconByID and baseID and C_Item.GetItemIconByID(baseID)
   mw.icon:SetTexture(icon or 134400)
-  mw.title:SetText(name or string.format(L["item %d"], itemID))
+  mw.title:SetText(name or string.format(L["item %d"], baseID or 0))
   mw.sub:SetText(string.format(L["%s · last %d days"], GW.HOUSE_NAMES[side()], mw.days))
   mw.frame:Show()
   renderTab()

@@ -304,8 +304,13 @@ end
 ---@param m GoldwrightTooltipModel
 ---@param h GoldwrightHouse
 ---@param expanded boolean the expand key is held: show every line
-local function tradeableLines(tt, m, h, expanded)
+---@param n number|nil how many are in the hovered stack: its prices are for all of them (#30)
+local function tradeableLines(tt, m, h, expanded, n)
   local O = GW.Opt
+  n = n or 1
+  -- A stack in your bags is priced as a whole: every price line is for all n, and the heading says
+  -- "×n"; Shift adds one item's price (goldwright-addon #30).
+  local function stack(copper) return money(copper * n) end
   local data = m.data
   local here = data and data[h.side]
   local listed = here and here.mv
@@ -329,13 +334,13 @@ local function tradeableLines(tt, m, h, expanded)
   if not O("ttNow") then
     addLine(tt, title(m))
   elseif listed then
-    addPair(tt, title(m, L["Min price"]), money(here.min))
+    addPair(tt, title(m, n > 1 and (L["Min price"] .. " ×" .. GW.Number(n)) or L["Min price"]), stack(here.min))
   else
     addPair(tt, title(m, L["Min price"]), L["none listed"], GREY)
   end
   if not listed and avg30 and O("ttNormal") then
     avgShown = here.avg30 and "avg30" or "avg7"
-    addPair(tt, "  " .. (here.avg30 and L["Avg price (30 days)"] or L["Avg price (7 days)"]), money(avg30))
+    addPair(tt, "  " .. (here.avg30 and L["Avg price (30 days)"] or L["Avg price (7 days)"]), stack(avg30))
   end
 
   -- TT-7 a vendor pays more than the auction house nets after its cut (whole copper)
@@ -361,7 +366,7 @@ local function tradeableLines(tt, m, h, expanded)
   for _, side in ipairs(SIDES) do
     local d = data[side]
     if side ~= h.side and shown(side) and d and d.mv then
-      addPair(tt, "  " .. GW.HOUSE_NAMES[side], money(d.min or d.mv))
+      addPair(tt, "  " .. GW.HOUSE_NAMES[side], stack(d.min or d.mv))
     end
   end
   local gain = listed and h.side ~= "N" and O("ttBetter") and GW.BetterHouse(data.N, "N", here.mv)
@@ -377,9 +382,11 @@ local function tradeableLines(tt, m, h, expanded)
   if expanded then
     -- the 7- and 30-day averages (the one the compact view showed isn't repeated)
     if here and O("ttNormal") then
-      if here.avg7 and avgShown ~= "avg7" then addPair(tt, "  " .. L["Avg price (7 days)"], money(here.avg7)) end
-      if here.avg30 and avgShown ~= "avg30" then addPair(tt, "  " .. L["Avg price (30 days)"], money(here.avg30)) end
+      if here.avg7 and avgShown ~= "avg7" then addPair(tt, "  " .. L["Avg price (7 days)"], stack(here.avg7)) end
+      if here.avg30 and avgShown ~= "avg30" then addPair(tt, "  " .. L["Avg price (30 days)"], stack(here.avg30)) end
     end
+    -- a stack: what one of them goes for
+    if n > 1 and listed and O("ttNow") then addPair(tt, "  " .. L["One item"], money(here.min)) end
     if listed and O("ttNow") and here.baitUnits > 0 then
       addLine(
         tt,
@@ -441,6 +448,35 @@ local function tradeableLines(tt, m, h, expanded)
   if footer then addLine(tt, footer, GW.SIGNAL_ORANGE, true) end
 end
 
+--- How many are in the stack the tooltip shows, when it shows one in your bags (or the bank's
+--- bags): the count a Goldwright list set (GW.tooltipCount), else from the slot the game filled the tooltip from, else the bag button it belongs to. 1 for
+--- anything else (chat links, the auction house, other add-ons' tooltips) (#30).
+---@param tt table tooltip
+---@param itemID number the tooltip's item
+---@return number
+local function stackSize(tt, itemID)
+  -- a Goldwright list that groups an item's stacks (the Sell tab's bags) says how many it shows
+  if GW.tooltipCount and tt == GameTooltip then return math.max(1, GW.tooltipCount) end
+  local bag, slot
+  local info = tt.processingInfo or (tt.GetPrimaryTooltipInfo and tt:GetPrimaryTooltipInfo())
+  if info and info.getterName == "GetBagItem" and type(info.getterArgs) == "table" then
+    bag, slot = info.getterArgs[1], info.getterArgs[2]
+  end
+  if not bag and tt.GetOwner then
+    local owner = tt:GetOwner()
+    if owner and owner.GetBagID and owner.GetID then
+      local ok, b = pcall(owner.GetBagID, owner)
+      if ok then
+        bag, slot = b, owner:GetID()
+      end
+    end
+  end
+  if not (bag and slot and C_Container and C_Container.GetContainerItemInfo) then return 1 end
+  local ok, ci = pcall(C_Container.GetContainerItemInfo, bag, slot)
+  if not (ok and ci and ci.itemID == itemID) then return 1 end
+  return math.max(1, ci.stackCount or 1)
+end
+
 --- Adds Goldwright's lines to an item tooltip: only the vendor price for items that can't go on
 --- the auction house, else the full set.
 ---@param tt table tooltip
@@ -460,7 +496,7 @@ local function addTooltipLines(tt, link, itemID, tipData, product)
     end
     return
   end
-  tradeableLines(tt, m, h, GW.ExpandKeyDown())
+  tradeableLines(tt, m, h, GW.ExpandKeyDown(), stackSize(tt, itemID))
 end
 
 --- Item tooltip hook for GameTooltip and ItemRefTooltip. Finds the item link and id, then adds our

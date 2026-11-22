@@ -415,7 +415,7 @@ end
 --- Options for UI.Window.
 ---@class GoldwrightWindowOptions
 ---@field title? string window title
----@field strata? string frame strata (default "HIGH")
+---@field strata? string frame strata (default "MEDIUM", the layer of the bags and the auction house; #23)
 ---@field movable? boolean drag with the left mouse button
 
 --- A framed window on UIParent (ButtonFrameTemplate) without portrait or button bar, closed by
@@ -450,7 +450,10 @@ function UI.Window(name, width, height, opts)
   windows[f] = true
   f:SetScale(UI.WindowScale())
   f:SetClampedToScreen(true) -- stays on screen when the size setting changes
-  f:SetFrameStrata(opts.strata or "HIGH")
+  -- The game's own layer for bags and the auction house: bags opened later come in front of a
+  -- Goldwright window instead of under it, and a click brings either forward (goldwright-addon #23).
+  -- Dialogs pass a higher strata.
+  f:SetFrameStrata(opts.strata or "MEDIUM")
   if ButtonFrameTemplate_HidePortrait then ButtonFrameTemplate_HidePortrait(f) end
   if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(f) end
   -- A look (Skin.lua) strips the window's own textures, so it is styled before anything is drawn on it.

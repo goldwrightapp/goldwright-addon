@@ -81,12 +81,28 @@ function GW.BlackwaterGaps(home)
   local out = {}
   if not (pack and pack.items) then return out end
   local n36 = function(x) return x and x ~= "" and tonumber(x, 36) or nil end
+  -- A full scan newer than the data pack is what's listed now at that house (GW.ItemData reads it
+  -- the same way): the quick look below uses its prices too, so a gap that opened since the pack
+  -- was built shows up, and one that closed drops off (goldwright-addon #35).
+  local fresh = {}
+  for side, sc in pairs(GW.HouseScans and GW.HouseScans() or {}) do
+    if not (pack.snapshotAt and pack.snapshotAt >= sc.at) then fresh[side] = sc.items end
+  end
+  ---@return number|nil mv the market value at that house now (nil: not listed)
+  local function mvAt(side, key, raw)
+    local scanned = fresh[side]
+    if scanned then
+      local s = scanned[key]
+      return s and n36(s:match("^([^,]*)")) or nil
+    end
+    return n36(raw:match("^([^,]*)"))
+  end
   for key, raw in pairs(pack.items) do
-    -- Random-suffix gear keys ("id:bonus") are left out; a quick look at the raw strings first,
-    -- so only promising items are read in full.
+    -- Random-suffix gear keys ("id:bonus") are left out; a quick look at the prices first, so only
+    -- promising items are read in full. Proven sales come from the pack, so it needs both houses.
     if type(key) == "number" and raw.N and raw[home] then
-      local nmv = n36(raw.N:match("^([^,]*)"))
-      local hmv = n36(raw[home]:match("^([^,]*)"))
+      local nmv = mvAt("N", key, raw.N)
+      local hmv = mvAt(home, key, raw[home])
       if nmv and hmv and nmv > 0 and hmv > 0 and (nmv > hmv * 1.2 or hmv > nmv * 1.2) then
         local d = GW.ItemData(key)
         local here, bw = d and d[home], d and d.N

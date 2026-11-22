@@ -254,5 +254,13 @@ ev:SetScript("OnEvent", function()
   end)
 end)
 
+--- Reads the gaps again when the window is open: after a full scan the prices changed, so gaps
+--- can open or close (goldwright-addon #35). Back to the top of the list.
+function GW.RefreshGaps()
+  if not (window and window:IsShown()) then return end
+  load()
+  render()
+end
+
 --- For tests: the window and its state.
 function GW.GapsDebug() return window, state end

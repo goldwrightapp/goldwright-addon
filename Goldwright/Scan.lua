@@ -241,6 +241,7 @@ priceStep = guarded(function()
   GW.ResetCache()
   finish("saved")
   GW.ApplyOptions() -- open panels redraw with the new prices
+  if GW.RefreshGaps then GW.RefreshGaps() end -- an open Blackwater gaps window too (#35)
   if GW.WatchIfNew then GW.WatchIfNew() end -- watched shopping lists: anything below max now?
 end)
 

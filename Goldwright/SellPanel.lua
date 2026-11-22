@@ -10,8 +10,10 @@ local L = GW.L
 
 local W, H = 1000, 590
 local ROWS, ROW_H = 11, 38 -- bag list
+local HEAD_H = 20 -- bag list: a category heading when sorted by Category (#22)
 local LADDER_ROWS, LADDER_H = 10, 18 -- cheapest listings
 local BAGS_W = 252 -- the bags card
+local NAME_X = 46 -- bag rows: where the name starts, after the item icon
 local MARKET_H = 300 -- the market card; the listing card takes the rest
 local DURATIONS = { { idx = 1, label = L["2h"] }, { idx = 2, label = L["8h"] }, { idx = 3, label = L["24h"] } }
 --- The two strategies (#15). Fast posts at the undercut setting's price (default: match the cheapest
@@ -68,10 +70,14 @@ local REASONS = {
 ---@field icon number? texture file id
 ---@field hidden boolean? hidden with right-click (GoldwrightDB.ignore)
 ---@field variant string? GW.LinkVariant of the bag item: its random suffix (#25)
+---@field key number|string the row's identity: the item id, or "id/variant" for each random suffix (#10)
+---@field packKey number|string the data pack key for its prices: "id:bonus" for a suffix the pack has, else the id
 ---@field name string
 ---@field isCommodity boolean commodities post any quantity in one listing; other items one per click
 ---@field unit number? price Fast would post at, from the data pack (per item, #5)
 ---@field total number unit * count, for sorting and the footer (0 without price data)
+---@field category string the game's item type (Trade Goods, Armor...), the "Category" sort key (#22)
+---@field subCategory string? the game's item subtype (Cloth, Cooking...)
 
 --- Strategy prices for the selected item.
 ---@class SellPrices
@@ -157,12 +163,12 @@ local function sellSide() return GW.AuctionSide and GW.AuctionSide() or GW.House
 local function sellCut() return GW.CUT[sellSide()] or 0.05 end
 
 --- Data pack numbers for the house you sell at, only when the item is listed there now
---- (history-only entries have no mv).
----@param itemID number
+--- (history-only entries have no mv). Random-suffix gear uses its own suffix's numbers (#10).
+---@param g SellBagItem
 ---@return table|nil here that house's entry, or nil when the item isn't listed there now
 ---@return table|nil data the item's entry for all houses (GW.ItemData)
-local function packFor(itemID)
-  local d = GW.ItemData(itemID)
+local function packFor(g)
+  local d = GW.ItemData(g.packKey or g.itemID)
   local here = d and d[sellSide()]
   return here and here.mv and here or nil, d
 end
@@ -247,13 +253,28 @@ local SORT_LABELS = { value = L["Value"], name = L["Name"], category = L["Catego
 local getInstant = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
 local getClassInfo = (C_Item and C_Item.GetItemClassInfo) or GetItemClassInfo
 
---- An item's category name for sorting (the game's item type: Trade Goods, Recipe, Armor...).
+--- An item's category: the game's item type (Trade Goods, Recipe, Armor...) for sorting, and its
+--- subtype (Cloth, Cooking...) for the row's tooltip.
 ---@param itemID number
----@return string
+---@return string category sort key and name ("~07" when the client has no name for it)
+---@return string|nil subCategory the game's item subtype
 local function categoryOf(itemID)
-  local classID = getInstant and select(6, getInstant(itemID))
+  local subName, classID
+  if getInstant then
+    local _, _, sub, _, _, class = getInstant(itemID)
+    subName, classID = sub, class
+  end
   local name = classID and getClassInfo and getClassInfo(classID)
-  return name or (classID and string.format("~%02d", classID)) or "~~"
+  local key = name or (classID and string.format("~%02d", classID)) or "~~"
+  return key, subName ~= "" and subName ~= name and subName or nil
+end
+
+--- The category as the row's tooltip says it: "Trade Goods · Cloth".
+---@param g SellBagItem
+---@return string
+local function categoryText(g)
+  local name = g.category and not g.category:find("^~") and g.category or "?"
+  return g.subCategory and (name .. " · " .. g.subCategory) or name
 end
 
 --- Whether bag item a goes before b in the chosen order. Ties fall back to value, then name.
@@ -265,9 +286,7 @@ local function before(a, b, order)
   if order == "name" then
     if a.name ~= b.name then return a.name < b.name end
   elseif order == "category" then
-    local ca, cb = a.category or categoryOf(a.itemID), b.category or categoryOf(b.itemID)
-    a.category, b.category = ca, cb
-    if ca ~= cb then return ca < cb end
+    if a.category ~= b.category then return a.category < b.category end
   elseif order == "quantity" then
     if a.count ~= b.count then return a.count > b.count end
   end
@@ -275,12 +294,49 @@ local function before(a, b, order)
   return a.name < b.name
 end
 
+--- A bag row's identity: the item id, or "id/variant" for random-suffix gear, so "of the Bear" and
+--- "of the Eagle" never share a row, a price or a post (goldwright-addon #10).
+---@param itemID number
+---@param variant string|nil GW.LinkVariant
+---@return number|string
+local function rowKey(itemID, variant)
+  if variant and variant ~= "" then return itemID .. "/" .. variant end
+  return itemID
+end
+
+--- The data pack key for a random suffix, tried like the tooltip does: "id:bonus..." (sorted, as
+--- GW.LinkVariant gives them), then each single bonus id, then the link's suffix field; the base id
+--- (all suffixes together) when the pack has none of them.
+---@param itemID number
+---@param variant string|nil GW.LinkVariant
+---@return number|string key
+local function packKeyOf(itemID, variant)
+  if not variant or variant == "" then return itemID end
+  local tries = {}
+  if variant:sub(1, 1) == "s" then
+    tries[1] = itemID .. ":" .. variant:sub(2)
+  else
+    tries[1] = itemID .. ":" .. variant
+    if variant:find(":") then
+      for b in variant:gmatch("%d+") do
+        tries[#tries + 1] = itemID .. ":" .. b
+      end
+    end
+  end
+  for _, k in ipairs(tries) do
+    if GW.ItemData(k) then return k end
+  end
+  return itemID
+end
+
 --- Rebuilds state.bags from your bags: unbound items that can be auctioned, one entry per item id,
 --- priced from the data pack (SELL-1). Hidden items are left out unless state.showHidden (SELL-2).
 local function scanBags()
   local groups, list, hidden = {}, {}, 0
   eachSellable(function(info) return info.itemID and not info.isBound end, function(info, loc, bag, slot)
-    local g = groups[info.itemID]
+    local variant = GW.LinkVariant(info.hyperlink) -- which random suffix (#25, #10)
+    local key = rowKey(info.itemID, variant)
+    local g = groups[key]
     if not g then
       local status = C_AuctionHouse.GetItemCommodityStatus(loc)
       g = {
@@ -292,13 +348,16 @@ local function scanBags()
         slot = slot,
         icon = info.iconFileID,
         hidden = ignored(info.itemID) and true or nil,
-        variant = GW.LinkVariant(info.hyperlink), -- which random suffix (#25)
+        variant = variant,
+        key = key,
+        packKey = packKeyOf(info.itemID, variant),
         name = (info.hyperlink and info.hyperlink:match("%[(.-)%]"))
           or (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(info.itemID))
           or string.format(L["item %d"], info.itemID),
         isCommodity = Enum and Enum.ItemCommodityStatus and status == Enum.ItemCommodityStatus.Commodity,
       }
-      groups[info.itemID] = g
+      g.category, g.subCategory = categoryOf(info.itemID)
+      groups[key] = g
       if g.hidden then hidden = hidden + 1 end
       if not g.hidden or state.showHidden then list[#list + 1] = g end
     end
@@ -306,8 +365,8 @@ local function scanBags()
   end)
   for _, g in ipairs(list) do
     -- the live Fast price once the item was searched this visit, else the data pack's
-    local here = packFor(g.itemID)
-    g.unit = state.live[g.itemID] or (here and here.min and GW.UndercutPrice(here.min)) or nil
+    local here = packFor(g)
+    g.unit = state.live[g.key] or (here and here.min and GW.UndercutPrice(here.min)) or nil
     g.total = g.unit and g.unit * g.count or 0
   end
   -- Sort in the chosen order (value by default) when the panel opens, then keep that order while
@@ -318,7 +377,7 @@ local function scanBags()
   local rank = state.rank
   local order = GW.Opt("bagSort") or "value"
   table.sort(list, function(a, b)
-    local ra, rb = rank[a.itemID], rank[b.itemID]
+    local ra, rb = rank[a.key], rank[b.key]
     if ra and rb then return ra < rb end
     if ra or rb then return ra ~= nil end
     return before(a, b, order)
@@ -328,27 +387,33 @@ local function scanBags()
     if r > maxRank then maxRank = r end
   end
   for _, g in ipairs(list) do
-    if not rank[g.itemID] then
+    if not rank[g.key] then
       maxRank = maxRank + 1
-      rank[g.itemID] = maxRank
+      rank[g.key] = maxRank
     end
   end
   state.bags, state.hiddenCount = list, hidden
   -- keep the selection pointing at the fresh entry (counts change after posting)
   if state.sel then
-    local fresh = groups[state.sel.itemID]
+    local fresh = groups[state.sel.key]
     if fresh then
       state.sel.count, state.sel.loc, state.sel.bag, state.sel.slot = fresh.count, fresh.loc, fresh.bag, fresh.slot
     end
   end
 end
 
---- The first bag slot holding this item that can be posted now (bags shift after every post).
+--- The first bag slot holding this item that can be posted now (bags shift after every post): of
+--- this exact random suffix when a variant is given, so Post never sends another suffix (#10).
 ---@param itemID number
+---@param variant string|nil GW.LinkVariant of the copy wanted; nil for any copy
 ---@return table|nil loc ItemLocation
-local function findLocation(itemID)
+local function findLocation(itemID, variant)
   return eachSellable(
-    function(info) return info.itemID == itemID and not info.isLocked end,
+    function(info)
+      return info.itemID == itemID
+        and not info.isLocked
+        and (variant == nil or GW.LinkVariant(info.hyperlink) == variant)
+    end,
     function(_, loc) return loc end
   )
 end
@@ -360,7 +425,7 @@ end
 ---@return string|nil kind chip colours: "grey", "blue" or "orange"
 local function bagNote(g)
   if g.hidden then return L["hidden"], "grey" end
-  local here, d = packFor(g.itemID)
+  local here, d = packFor(g)
   local vendor = GW.VendorPrice(g.itemID)
   if vendor > 0 and g.unit and GW.Net(sellSide(), g.unit) <= vendor then return L["vendor pays more"], "grey" end
   local other, gain = betterElsewhere(here, d)
@@ -373,7 +438,43 @@ local function bagNote(g)
   return nil
 end
 
---- Redraws the bag list: rows with price each and a note, the item count, the footer and the
+--- What the bag list shows, top to bottom: the bag items, and when sorted by Category a heading
+--- before each group ({ head = "Trade Goods", n = 6 }) (#22).
+---@return table[] entries SellBagItem or heading
+local function bagEntries()
+  if GW.Opt("bagSort") ~= "category" then return state.bags end
+  local out, head = {}, nil
+  for _, g in ipairs(state.bags) do
+    if not head or head.cat ~= g.category then
+      local name = g.category and not g.category:find("^~") and g.category or "?"
+      head = { head = name, cat = g.category, n = 0 }
+      out[#out + 1] = head
+    end
+    head.n = head.n + 1
+    out[#out + 1] = g
+  end
+  return out
+end
+
+--- Height of one bag list entry: a heading is slimmer than an item row.
+---@param e table
+---@return number
+local function entryHeight(e) return e.head and HEAD_H or ROW_H end
+
+--- The first entry to show so that `last` is the bottom one that fits (for scrolling down to it).
+---@param entries table[]
+---@param last number
+---@return number offset entries skipped above
+local function offsetEnding(entries, last)
+  local room, first = ROWS * ROW_H, last
+  while first >= 1 and room - entryHeight(entries[first]) >= 0 do
+    room = room - entryHeight(entries[first])
+    first = first - 1
+  end
+  return math.max(0, first)
+end
+
+--- Redraws the bag list: rows with the stack's price and a note, the item count, the footer and the
 --- hidden-items link.
 local function renderBags()
   local total, shown = 0, 0
@@ -383,25 +484,56 @@ local function renderBags()
       shown = shown + 1
     end
   end
+  -- Lay out from the scroll offset: headings and item rows, as many as fit.
+  local entries = bagEntries()
+  state.offset = math.min(state.offset, offsetEnding(entries, #entries))
+  local y, r, hd, idx = 0, 0, 0, state.offset + 1
+  local rowFor = {}
+  while entries[idx] and y + entryHeight(entries[idx]) <= ROWS * ROW_H do
+    local e = entries[idx]
+    if e.head then
+      hd = hd + 1
+      local h = panel.heads[hd]
+      h:ClearAllPoints()
+      h:SetPoint("TOPLEFT", 0, -y)
+      h.text:SetText(string.format("%s · %d", e.head, e.n))
+      h:Show()
+    else
+      r = r + 1
+      rowFor[r] = e
+      panel.rows[r]:ClearAllPoints()
+      panel.rows[r]:SetPoint("TOPLEFT", 0, -y)
+    end
+    y = y + entryHeight(e)
+    idx = idx + 1
+  end
+  for i = hd + 1, #panel.heads do
+    panel.heads[i]:Hide()
+  end
   for i, row in ipairs(panel.rows) do
-    local g = state.bags[i + state.offset]
+    local g = rowFor[i]
     row.g = g
     if g then
       row:Show()
       row.icon:SetTexture(g.icon or 134400)
       row.icon:SetDesaturated(g.hidden and true or false)
-      row.name:SetText(g.count > 1 and string.format("%s  %s×%d|r", g.name, hex(T.faint), g.count) or g.name)
+      row.name:SetText(g.name)
+      -- the stack count on the icon, bottom right, like the game's bags (#22)
+      row.count:SetText(g.count > 1 and GW.Number(g.count) or "")
       setColor(row.name, g.hidden and T.faint or qualityColor(g.quality))
-      row.value:SetText(g.unit and GW.Money(g.unit, true) or "–")
+      -- One price per row: the whole stack's, what "Value" sorts by (#22). From 1g up in whole
+      -- silver, like the footer's "Worth about", so it stays on one line.
+      local t = g.unit and (g.total >= 10000 and math.floor(g.total / 100 + 0.5) * 100 or g.total)
+      row.value:SetText(t and GW.Money(t, true) or "–")
       UI.SetChip(row.chip, bagNote(g))
       -- one line when there is no note, centred like the price
       row.name:ClearAllPoints()
       if row.chip:IsShown() then
-        row.name:SetPoint("TOPLEFT", 46, -5)
+        row.name:SetPoint("TOPLEFT", NAME_X, -5)
       else
-        row.name:SetPoint("LEFT", 46, 0)
+        row.name:SetPoint("LEFT", NAME_X, 0)
       end
-      local on = state.sel and state.sel.itemID == g.itemID or false
+      local on = state.sel and state.sel.key == g.key or false
       row.sel:SetShown(on)
       row.bar:SetShown(on)
     else
@@ -409,9 +541,8 @@ local function renderBags()
     end
   end
   panel.bagCaption:SetText(L["Your bags"] .. " · " .. GW.PluralCount(shown, "%s item", "%s items"))
-  panel.sortButton:SetText(
-    string.format(L["|cff8fb0ffSort: %s|r"], SORT_LABELS[GW.Opt("bagSort")] or SORT_LABELS.value)
-  )
+  panel.sortButton:SetText(string.format(L["Sort: %s"], SORT_LABELS[GW.Opt("bagSort")] or SORT_LABELS.value))
+  panel.sortButton:SetWidth(math.ceil(panel.sortButton:GetFontString():GetStringWidth()) + 20)
   panel.bagWorth:SetText(string.format(L["Worth about %s"], GW.Money(total)))
   if (state.hiddenCount or 0) > 0 then
     panel.hiddenLink:SetText(
@@ -535,7 +666,7 @@ local function recalc()
     local ok, d = pcall(C_AuctionHouse.CalculateCommodityDeposit, g.itemID, state.duration, qty)
     deposit = ok and d or nil
   else
-    local loc = findLocation(g.itemID)
+    local loc = findLocation(g.itemID, g.variant)
     if loc then
       local ok, d = pcall(C_AuctionHouse.CalculateItemDeposit, loc, state.duration, qty)
       deposit = ok and d or nil
@@ -552,7 +683,7 @@ local function recalc()
 
   -- How many other players' units are listed cheaper than this price: buyers take those first (a
   -- new listing goes first among its own price). A count, not a forecast: others keep posting.
-  local here = packFor(g.itemID)
+  local here = packFor(g)
   local cheaper
   if state.stats and unit > 0 then
     cheaper = 0
@@ -623,7 +754,7 @@ local function computePrices()
     local first = s.sorted[s.firstRealIndex]
     cheapest, market, own = first.price, s.mv, first.own
   else
-    local here = packFor(g.itemID)
+    local here = packFor(g)
     if here then
       cheapest, market = here.min, here.mv
     end
@@ -727,7 +858,7 @@ end
 local function renderMarket()
   local g, s = state.sel, state.stats
   if not g then return end
-  local here = packFor(g.itemID)
+  local here = packFor(g)
   local lowest = (s and s.sorted[s.firstRealIndex].price) or (here and here.min)
   panel.lowest:SetText(lowest and GW.Money(lowest) or "–")
   panel.normal:SetText(here and here.avg7 and GW.Money(here.avg7) or "–")
@@ -838,16 +969,16 @@ local function readResults(itemKeyFromEvent, eventName)
   if eventName and not eventName:find("^timeout") then state.answered = true end
   if #list == 0 and state.searching then return end
   state.searching = false
-  local recent = GW.RecentPrice(g.itemID, sellSide())
+  local recent = GW.RecentPrice(g.packKey, sellSide())
   state.stats = GW.MarketStats(list, recent)
-  GW.SellCharts.Listings(g.itemID, state.stats) -- the Market window's Supply tab
+  GW.SellCharts.Listings(g.packKey, state.stats) -- the Market window's Supply tab
   GW.NoteBaitSearch(g.itemID, g.name, sellSide(), state.stats, recent)
   panel.listStatus:SetText(state.stats and L["searched just now"] or L["no other listings"])
   renderMarket()
   applyDefaultStrategy()
   -- the bag row follows the live price too, so its note and the listing's warning agree
   if state.stats and state.prices then
-    state.live[g.itemID] = state.prices.fast
+    state.live[g.key] = state.prices.fast
     g.unit, g.total = state.prices.fast, state.prices.fast * g.count
     renderBags()
   end
@@ -880,7 +1011,7 @@ search = function(g)
   -- Use the exact item key of the item in your bag (with suffix and item level): searching
   -- random-suffix gear ("of the Falcon") by item id alone got no answer in game.
   local key
-  local loc = findLocation(g.itemID) or g.loc
+  local loc = findLocation(g.itemID, g.variant) or g.loc
   if loc and C_AuctionHouse.GetItemKeyFromItem then
     local ok, k = pcall(C_AuctionHouse.GetItemKeyFromItem, loc)
     if ok then key = k end
@@ -1021,7 +1152,7 @@ local function selectItem(g)
   panel.col2:Show()
   panel.col3:Show()
   panel.empty:Hide()
-  GW.SellCharts.Render(g.itemID, g.name)
+  GW.SellCharts.Render(g.packKey, g.name)
   renderBags()
   search(g)
 end
@@ -1080,11 +1211,12 @@ local function tryAdvance()
   for _, g in ipairs(state.bags) do
     if not g.hidden then visible[#visible + 1] = g end
   end
-  local nextItem = GW.NextInQueue(a.order, visible, a.itemID, a.keepSame)
+  local nextItem = GW.NextInQueue(a.order, visible, a.key or a.itemID, a.keepSame)
   if nextItem then
+    -- scroll so the next item is in view (headings count too when sorted by Category)
     state.offset = 0
-    for i, g in ipairs(state.bags) do
-      if g == nextItem and i > ROWS then state.offset = i - ROWS end
+    for i, e in ipairs(bagEntries()) do
+      if e == nextItem then state.offset = offsetEnding(bagEntries(), i) end
     end
     local message, color = panel.toast:GetText(), { panel.toast:GetTextColor() }
     selectItem(nextItem)
@@ -1107,6 +1239,7 @@ local function onPosted()
   GW.Log("posted %d x %s at %d (%s)", p.qty, p.name, p.unit, p.commodity and "commodity" or "item")
   state.advance = {
     itemID = p.itemID,
+    key = p.key,
     qty = p.qty,
     countBefore = p.countBefore,
     order = p.order,
@@ -1133,7 +1266,7 @@ local function postSelected()
   if p and p.warning then
     if GetTime() - (p.warnedAt or 0) < GW.CONFIRM_DELAY then return end -- a double click or held key
     p.warning = nil
-    local loc = findLocation(p.itemID) or p.loc
+    local loc = findLocation(p.itemID, p.variant) or p.loc
     if p.commodity and C_AuctionHouse.ConfirmPostCommodity then
       C_AuctionHouse.ConfirmPostCommodity(loc, p.duration, p.qty, p.unit)
     elseif C_AuctionHouse.ConfirmPostItem then
@@ -1148,7 +1281,7 @@ local function postSelected()
   local unit, qty = postUnit(), quantity()
   if unit <= 0 then return toast(L["Set a price first."], GW.SIGNAL_ORANGE) end
   if unit * qty > MAX_LISTING then return end -- the warning says why
-  local loc = findLocation(g.itemID)
+  local loc = findLocation(g.itemID, g.variant)
   if not loc then return toast(L["Can't find that item in your bags any more."], GW.SIGNAL_ORANGE) end
   if C_AuctionHouse.IsThrottledMessageSystemReady and not C_AuctionHouse.IsThrottledMessageSystemReady() then
     return toast(L["The auction house is busy: click again in a moment."], GW.SIGNAL_ORANGE)
@@ -1156,11 +1289,13 @@ local function postSelected()
 
   local order = {}
   for i, b in ipairs(state.bags) do
-    order[i] = { itemID = b.itemID }
+    order[i] = { itemID = b.itemID, key = b.key }
   end
   ---@type SellPendingPost
   state.pending = {
     itemID = g.itemID,
+    key = g.key,
+    variant = g.variant,
     name = g.name,
     qty = qty,
     unit = unit,
@@ -1347,14 +1482,10 @@ local function buildBags(view)
   card:SetPoint("BOTTOMLEFT", 6, 6)
   card:SetWidth(BAGS_W)
   panel.bagCaption = UI.Caption(card, L["Your bags"], 12, -10)
-  -- The sort order (#22): each click steps to the next order; the list is re-sorted at once.
-  panel.sortButton = CreateFrame("Button", nil, card)
-  panel.sortButton:SetSize(110, 16)
-  panel.sortButton:SetPoint("TOPRIGHT", -10, -10)
-  panel.sortButton:SetNormalFontObject("GameFontHighlightSmall")
-  panel.sortButton:SetText(" ")
-  panel.sortButton:GetFontString():SetJustifyH("RIGHT")
-  panel.sortButton:GetFontString():SetPoint("RIGHT")
+  -- The sort order (#22): a real button (as text, players didn't see it could be clicked); each
+  -- click steps to the next order and the list is re-sorted at once. renderBags sizes it to fit.
+  panel.sortButton = UI.Button(card, " ", 90, 20)
+  panel.sortButton:SetPoint("TOPRIGHT", -8, -5)
   UI.HoverTip(panel.sortButton, L["Order of your bags: value, name, category or quantity. Click for the next."])
   panel.sortButton:SetScript("OnClick", function()
     local cur = GW.Opt("bagSort") or "value"
@@ -1368,13 +1499,13 @@ local function buildBags(view)
     renderBags()
   end)
 
-  panel.rows = {}
+  panel.rows, panel.heads = {}, {}
   local list = CreateFrame("Frame", nil, card)
   list:SetPoint("TOPLEFT", 1, -30)
   list:SetSize(BAGS_W - 2, ROWS * ROW_H)
   list:EnableMouseWheel(true)
   list:SetScript("OnMouseWheel", function(_, delta)
-    state.offset = math.max(0, math.min(state.offset - delta, math.max(0, #state.bags - ROWS)))
+    state.offset = math.max(0, state.offset - delta) -- renderBags keeps it from scrolling past the end
     renderBags()
   end)
   for i = 1, ROWS do
@@ -1403,22 +1534,26 @@ local function buildBags(view)
     row.icon:SetSize(28, 28)
     row.icon:SetPoint("LEFT", 10, 0)
     row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    row.count = row:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+    row.count:SetPoint("BOTTOMRIGHT", row.icon, "BOTTOMRIGHT", 1, 0)
+    row.count:SetJustifyH("RIGHT")
     row.name = UI.FontString(row, "GameFontHighlight", "LEFT")
-    row.name:SetPoint("TOPLEFT", 46, -5)
-    row.name:SetWidth(BAGS_W - 46 - 78)
+    row.name:SetPoint("TOPLEFT", NAME_X, -5)
+    row.name:SetWidth(BAGS_W - NAME_X - 78)
     row.name:SetWordWrap(false)
     row.chip = UI.Chip(row)
-    row.chip:SetPoint("TOPLEFT", 46, -21)
+    row.chip:SetPoint("TOPLEFT", NAME_X, -21)
     row.value = UI.Text(row, "GameFontHighlightSmall", "muted", "RIGHT")
     row.value:SetPoint("RIGHT", -10, 0)
-    row.value:SetWidth(74)
+    row.value:SetWidth(78)
+    row.value:SetWordWrap(false)
     row:SetScript("OnClick", function(self, button)
       local g = self.g
       if not g then return end
       if button == "RightButton" then -- SELL-2: "Don't show" (right-click again to bring it back)
         GoldwrightDB.ignore = GoldwrightDB.ignore or {}
         GoldwrightDB.ignore[g.itemID] = not g.hidden or nil
-        if state.sel and state.sel.itemID == g.itemID and not g.hidden then clearSelection() end
+        if state.sel and state.sel.key == g.key and not g.hidden then clearSelection() end
         scanBags()
         renderBags()
         return
@@ -1428,7 +1563,15 @@ local function buildBags(view)
     row:SetScript("OnEnter", function(self)
       if not self.g then return end
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+      -- the tooltip prices the row's whole count, all bag slots together (#30)
+      GW.tooltipCount = self.g.count
       GameTooltip:SetBagItem(self.g.bag, self.g.slot)
+      GW.tooltipCount = nil
+      -- pressing or releasing Shift redraws it, like the game's bags do
+      self.hovered = true
+      self:RegisterEvent("MODIFIER_STATE_CHANGED")
+      -- what "Sort: Category" goes by (#22)
+      GameTooltip:AddLine(L["Category"] .. ": " .. categoryText(self.g), 0.6, 0.6, 0.65)
       GameTooltip:AddLine(
         self.g.hidden and L["Right-click: show in this list again"] or L["Right-click: hide from this list"],
         0.6,
@@ -1437,8 +1580,28 @@ local function buildBags(view)
       )
       GameTooltip:Show()
     end)
-    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    row:SetScript("OnLeave", function(self)
+      self.hovered = nil
+      self:UnregisterEvent("MODIFIER_STATE_CHANGED")
+      GameTooltip:Hide()
+    end)
+    row:SetScript("OnEvent", function(self)
+      if self.hovered and self:IsShown() then self:GetScript("OnEnter")(self) end
+    end)
     panel.rows[i] = row
+  end
+  -- Category headings (#22): a slim line naming the group and how many items are in it.
+  for i = 1, ROWS do
+    local h = CreateFrame("Frame", nil, list)
+    h:SetSize(BAGS_W - 2, HEAD_H)
+    local line = UI.Rule(h, "rowLine")
+    line:SetPoint("BOTTOMLEFT")
+    line:SetPoint("BOTTOMRIGHT")
+    line:SetHeight(1)
+    h.text = UI.Text(h, "GameFontNormalSmall", "muted", "LEFT")
+    h.text:SetPoint("LEFT", 12, -1)
+    h:Hide()
+    panel.heads[i] = h
   end
 
   local foot = UI.Rule(card)
@@ -1449,7 +1612,7 @@ local function buildBags(view)
   panel.bagWorth:SetPoint("BOTTOMLEFT", 12, 26)
   local each = UI.Text(card, "GameFontHighlightSmall", "faint", "RIGHT")
   each:SetPoint("BOTTOMRIGHT", -12, 26)
-  each:SetText(L["price each"])
+  each:SetText(L["price per stack"])
   panel.hiddenLink = CreateFrame("Button", nil, card)
   panel.hiddenLink:SetSize(150, 16)
   panel.hiddenLink:SetPoint("BOTTOMLEFT", 10, 6)
@@ -1836,7 +1999,7 @@ local function createPanel()
       if state.sel then
         renderMarket()
         applyDefaultStrategy()
-        GW.SellCharts.Render(state.sel.itemID, state.sel.name)
+        GW.SellCharts.Render(state.sel.packKey, state.sel.name)
       end
     end
   end)
@@ -1889,12 +2052,14 @@ end
 
 --- Switches to Sell with this item selected, if it is in your bags (CXL-7: "Repost in Sell").
 ---@param itemID number
+---@param variant string|nil GW.LinkVariant of the auction: that random suffix (#10); nil for any
 ---@return boolean|nil found true when selected, false when not in your bags, nil without a panel
-function GW.SellItem(itemID)
+function GW.SellItem(itemID, variant)
   if not panel then return end
   showTab("sell")
+  local want = variant and rowKey(itemID, variant)
   for _, g in ipairs(state.bags) do
-    if g.itemID == itemID and not g.hidden then
+    if g.itemID == itemID and (not want or g.key == want) and not g.hidden then
       selectItem(g)
       return true
     end
@@ -1925,9 +2090,10 @@ local function pickFromBags(bag, slot)
   if ignored(info.itemID) and not state.showHidden then
     return toast(L["That item is hidden on the Sell tab: show your hidden items below the list."], GW.SIGNAL_ORANGE)
   end
+  local want = rowKey(info.itemID, GW.LinkVariant(info.hyperlink))
   for pass = 1, 2 do
     for _, g in ipairs(state.bags) do
-      if g.itemID == info.itemID then return selectItem(g) end
+      if g.key == want then return selectItem(g) end
     end
     if pass == 1 then -- the bags changed since the list was drawn
       scanBags()

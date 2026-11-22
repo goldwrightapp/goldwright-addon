@@ -539,7 +539,7 @@ local function build(parent)
   view.repost = UI.Button(view, L["Repost in Sell"], 130, 24)
   view.repost:SetPoint("BOTTOMLEFT", 580, 10)
   view.repost:SetScript("OnClick", function()
-    if cv.repost and GW.SellItem then GW.SellItem(cv.repost.itemID) end
+    if cv.repost and GW.SellItem then GW.SellItem(cv.repost.itemID, GW.LinkVariant(cv.repost.link)) end
   end)
   view.repost:Hide()
   view.next = UI.Button(view, L["Cancel Next Undercut"], 220, 26)

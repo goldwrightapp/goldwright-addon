@@ -1,11 +1,17 @@
 # Goldwright changelog
 
-## 0.7.6
+## 0.7.7
 
-Urgent fix for PvP and Roleplay players: since Forever's latest client update, Goldwright could show Normal prices on every realm type.
+### New
+- Added stack prices to bag tooltips: hovering a stack shows what the whole stack is worth; hold Shift for one item's price. ([#30](https://github.com/goldwrightapp/goldwright-addon/issues/30))
+- Added category headings to the Sell tab's bag list when you sort by Category. ([#22](https://github.com/goldwrightapp/goldwright-addon/issues/22))
+- Added stack counts on the Sell tab's item icons, like in your bags. ([#22](https://github.com/goldwrightapp/goldwright-addon/issues/22))
 
-- **Fix: prices from the right auction house again.** Forever's update on 20–21 November hides the realm from add-ons on purpose (it stops layer-jumping add-ons). Goldwright used the realm's name to know your realm type, so PvP, Roleplay and RP-PvP players were silently shown Normal prices, and players who had switched the Normal data off saw no prices at all. Goldwright now reads your realm type straight from the game's rules (whether PvP and Roleplay rules apply), which the update doesn't hide, so it's right from the moment you log in. ([#28](https://github.com/goldwrightapp/goldwright-addon/issues/28))
-- **Your choice wins:** Settings › Ruleset still sets the realm type by hand. And if a future update ever hides the game's rules too, Goldwright asks you once (**Normal · PvP · RP · RP-PvP**) and remembers the answer for that character.
-- **Your sales history and level plans** stay with your character after the update; they were filed under the realm's old name.
-- **`/gw bug`** now shows where your realm type came from, to help with reports.
-- **Bug reports keep the auction house lines:** fights are only noted in the report's log while a Goldwright window is open, so a questing session no longer pushes them out.
+### Improved
+- The Sell tab's bag list shows one price per row: the whole stack's. ([#22](https://github.com/goldwrightapp/goldwright-addon/issues/22))
+- The Sort button on the Sell tab now looks like a button. ([#22](https://github.com/goldwrightapp/goldwright-addon/issues/22))
+- Blackwater gaps use your latest full scan, and refresh when a scan finishes. ([#35](https://github.com/goldwrightapp/goldwright-addon/issues/35))
+- Your bags now open in front of Goldwright's windows. ([#23](https://github.com/goldwrightapp/goldwright-addon/issues/23))
+
+### Bug Fixes
+- Fixed random-suffix gear sharing one row, one price and the wrong copy when posting on the Sell tab. ([#10](https://github.com/goldwrightapp/goldwright-addon/issues/10))
