@@ -425,10 +425,31 @@ end
 ---@param height number in pixels
 ---@param opts? GoldwrightWindowOptions
 ---@return table frame the new window
+local windows = {} -- every UI.Window, for the Window size setting
+
+--- The Window size setting (60–100%, goldwright-addon #23) as a frame scale.
+---@return number scale 0.6 to 1
+function UI.WindowScale()
+  local s = tonumber(GW.Opt and GW.Opt("windowScale")) or 1
+  return math.max(0.6, math.min(1, s))
+end
+
+--- Applies the Window size setting to every Goldwright window: the whole window shrinks evenly, so
+--- nothing inside it moves.
+function UI.ApplyWindowScale()
+  local s = UI.WindowScale()
+  for f in pairs(windows) do
+    if f:GetScale() ~= s then f:SetScale(s) end
+  end
+end
+
 function UI.Window(name, width, height, opts)
   opts = opts or {}
   local f = CreateFrame("Frame", name, UIParent, "ButtonFrameTemplate")
   f:SetSize(width, height)
+  windows[f] = true
+  f:SetScale(UI.WindowScale())
+  f:SetClampedToScreen(true) -- stays on screen when the size setting changes
   f:SetFrameStrata(opts.strata or "HIGH")
   if ButtonFrameTemplate_HidePortrait then ButtonFrameTemplate_HidePortrait(f) end
   if ButtonFrameTemplate_HideButtonBar then ButtonFrameTemplate_HideButtonBar(f) end

@@ -347,9 +347,5 @@ end
 function GW.BestPostText(win)
   if not win then return nil end
   if win.flat then return L["Supply is about the same all day: post whenever suits you."] end
-  return string.format(
-    L["Supply is lowest %s–%s: listings sell fastest."],
-    GW.HourLabel(win.start),
-    GW.HourLabel(win.stop)
-  )
+  return string.format(L["Fewest listed %s–%s (your time)."], GW.HourLabel(win.start), GW.HourLabel(win.stop))
 end

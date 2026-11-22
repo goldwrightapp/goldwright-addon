@@ -67,6 +67,7 @@ local REASONS = {
 ---@field quality number?
 ---@field icon number? texture file id
 ---@field hidden boolean? hidden with right-click (GoldwrightDB.ignore)
+---@field variant string? GW.LinkVariant of the bag item: its random suffix (#25)
 ---@field name string
 ---@field isCommodity boolean commodities post any quantity in one listing; other items one per click
 ---@field unit number? price Fast would post at, from the data pack (per item, #5)
@@ -178,7 +179,7 @@ local function normalPrice(here) return here and (here.avg7 or here.avg30) end
 ---@return string|nil side the better house
 ---@return number|nil gain % more after both cuts
 local function betterElsewhere(here, d)
-  if not (here and d) then return nil end
+  if not (here and d and GW.Opt("ttBetter")) then return nil end -- the "pays more" hints setting (#24)
   local at, own = sellSide(), GW.House().side
   local other = at == "N" and own or "N"
   if other == at then return nil end
@@ -239,6 +240,41 @@ local function eachSellable(want, fn)
   return nil
 end
 
+--- The bag list's sort orders, in the order the sort button steps through them (#22).
+local SORTS = { "value", "name", "category", "quantity" }
+local SORT_LABELS = { value = L["Value"], name = L["Name"], category = L["Category"], quantity = L["Quantity"] }
+
+local getInstant = (C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant
+local getClassInfo = (C_Item and C_Item.GetItemClassInfo) or GetItemClassInfo
+
+--- An item's category name for sorting (the game's item type: Trade Goods, Recipe, Armor...).
+---@param itemID number
+---@return string
+local function categoryOf(itemID)
+  local classID = getInstant and select(6, getInstant(itemID))
+  local name = classID and getClassInfo and getClassInfo(classID)
+  return name or (classID and string.format("~%02d", classID)) or "~~"
+end
+
+--- Whether bag item a goes before b in the chosen order. Ties fall back to value, then name.
+---@param a table
+---@param b table
+---@param order string
+---@return boolean
+local function before(a, b, order)
+  if order == "name" then
+    if a.name ~= b.name then return a.name < b.name end
+  elseif order == "category" then
+    local ca, cb = a.category or categoryOf(a.itemID), b.category or categoryOf(b.itemID)
+    a.category, b.category = ca, cb
+    if ca ~= cb then return ca < cb end
+  elseif order == "quantity" then
+    if a.count ~= b.count then return a.count > b.count end
+  end
+  if a.total ~= b.total then return a.total > b.total end
+  return a.name < b.name
+end
+
 --- Rebuilds state.bags from your bags: unbound items that can be auctioned, one entry per item id,
 --- priced from the data pack (SELL-1). Hidden items are left out unless state.showHidden (SELL-2).
 local function scanBags()
@@ -256,6 +292,7 @@ local function scanBags()
         slot = slot,
         icon = info.iconFileID,
         hidden = ignored(info.itemID) and true or nil,
+        variant = GW.LinkVariant(info.hyperlink), -- which random suffix (#25)
         name = (info.hyperlink and info.hyperlink:match("%[(.-)%]"))
           or (C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(info.itemID))
           or string.format(L["item %d"], info.itemID),
@@ -273,17 +310,18 @@ local function scanBags()
     g.unit = state.live[g.itemID] or (here and here.min and GW.UndercutPrice(here.min)) or nil
     g.total = g.unit and g.unit * g.count or 0
   end
-  -- Sort by value when the panel opens, then keep that order while it stays open: posting part of
-  -- a stack lowers its value, and rows jumping around under the mouse breaks the post queue's flow.
-  -- Items new to the bags go to the end. state.rank is cleared each time the panel opens.
+  -- Sort in the chosen order (value by default) when the panel opens, then keep that order while
+  -- it stays open: posting part of a stack lowers its value, and rows jumping around under the mouse
+  -- breaks the post queue's flow. Items new to the bags go to the end. state.rank is cleared each
+  -- time the panel opens and when the order changes.
   state.rank = state.rank or {}
   local rank = state.rank
+  local order = GW.Opt("bagSort") or "value"
   table.sort(list, function(a, b)
     local ra, rb = rank[a.itemID], rank[b.itemID]
     if ra and rb then return ra < rb end
     if ra or rb then return ra ~= nil end
-    if a.total ~= b.total then return a.total > b.total end
-    return a.name < b.name
+    return before(a, b, order)
   end)
   local maxRank = 0
   for _, r in pairs(rank) do
@@ -370,7 +408,10 @@ local function renderBags()
       row:Hide()
     end
   end
-  panel.bagCount:SetText(GW.PluralCount(shown, "%s item", "%s items"))
+  panel.bagCaption:SetText(L["Your bags"] .. " · " .. GW.PluralCount(shown, "%s item", "%s items"))
+  panel.sortButton:SetText(
+    string.format(L["|cff8fb0ffSort: %s|r"], SORT_LABELS[GW.Opt("bagSort")] or SORT_LABELS.value)
+  )
   panel.bagWorth:SetText(string.format(L["Worth about %s"], GW.Money(total)))
   if (state.hiddenCount or 0) > 0 then
     panel.hiddenLink:SetText(
@@ -731,11 +772,14 @@ end
 --- Shared with the My Auctions tab.
 ---@param itemID number
 ---@param itemKey table? item key for item (non-commodity) results
+---@param variant string? GW.LinkVariant of the item being priced: item rows of another random suffix
+--- are left out. A search (Blizzard's Sell window's above all) can return every suffix of the item,
+--- and they share one item id (goldwright-addon #25). "" or nil keeps every row.
 ---@return { price: number, qty: number, own: boolean?, ownQty: number? }[] list price is per unit
 ---@return string|nil source "commodity", "item" or nil when empty
 ---@return number commodityCount number of commodity results the client reported
 ---@return number itemCount number of item results the client reported
-function GW.CollectSearchResults(itemID, itemKey)
+function GW.CollectSearchResults(itemID, itemKey, variant)
   local list = {}
   local nc = C_AuctionHouse.GetNumCommoditySearchResults(itemID) or 0
   for i = 1, nc do
@@ -756,14 +800,21 @@ function GW.CollectSearchResults(itemID, itemKey)
   -- by the count turned 31 Expert Cookbooks at 94s 99c into "3s 6c each"). Only an item that
   -- stacks would carry a whole-stack buyout; on this auction house those are commodities.
   local ni = itemKey and (C_AuctionHouse.GetNumItemSearchResults(itemKey) or 0) or 0
-  local stacks = GW.MaxStack and (GW.MaxStack(itemKey.itemID) or 1) > 1
+  local stacks = itemKey and GW.MaxStack and (GW.MaxStack(itemKey.itemID) or 1) > 1
+  local other = 0
   for i = 1, ni do
     local r = C_AuctionHouse.GetItemSearchResultInfo(itemKey, i)
     if r and r.buyoutAmount and (r.quantity or 0) > 0 then
-      local each = stacks and math.floor(r.buyoutAmount / r.quantity + 0.5) or r.buyoutAmount
-      list[#list + 1] = { price = each, qty = r.quantity, own = r.containsOwnerItem }
+      local rv = variant and variant ~= "" and r.itemLink and GW.LinkVariant(r.itemLink)
+      if rv and rv ~= variant then
+        other = other + r.quantity -- another suffix of the item
+      else
+        local each = stacks and math.floor(r.buyoutAmount / r.quantity + 0.5) or r.buyoutAmount
+        list[#list + 1] = { price = each, qty = r.quantity, own = r.containsOwnerItem }
+      end
     end
   end
+  if other > 0 then GW.Log("left out %d listings of other suffixes (item %s, %s)", other, tostring(itemID), variant) end
   return list, #list > 0 and "item" or nil, nc, ni
 end
 
@@ -774,7 +825,7 @@ end
 local function readResults(itemKeyFromEvent, eventName)
   local g = state.sel
   if not g then return end
-  local list, source, nc, ni = GW.CollectSearchResults(g.itemID, itemKeyFromEvent or state.key)
+  local list, source, nc, ni = GW.CollectSearchResults(g.itemID, itemKeyFromEvent or state.key, g.variant)
   GW.Log(
     "%s for %s: %d listings (%s; commodity n=%s, item n=%s)",
     eventName or "read",
@@ -1295,9 +1346,27 @@ local function buildBags(view)
   card:SetPoint("TOPLEFT", 6, -6)
   card:SetPoint("BOTTOMLEFT", 6, 6)
   card:SetWidth(BAGS_W)
-  UI.Caption(card, L["Your bags"], 12, -10)
-  panel.bagCount = UI.Text(card, "GameFontHighlightSmall", "faint", "RIGHT")
-  panel.bagCount:SetPoint("TOPRIGHT", -12, -12)
+  panel.bagCaption = UI.Caption(card, L["Your bags"], 12, -10)
+  -- The sort order (#22): each click steps to the next order; the list is re-sorted at once.
+  panel.sortButton = CreateFrame("Button", nil, card)
+  panel.sortButton:SetSize(110, 16)
+  panel.sortButton:SetPoint("TOPRIGHT", -10, -10)
+  panel.sortButton:SetNormalFontObject("GameFontHighlightSmall")
+  panel.sortButton:SetText(" ")
+  panel.sortButton:GetFontString():SetJustifyH("RIGHT")
+  panel.sortButton:GetFontString():SetPoint("RIGHT")
+  UI.HoverTip(panel.sortButton, L["Order of your bags: value, name, category or quantity. Click for the next."])
+  panel.sortButton:SetScript("OnClick", function()
+    local cur = GW.Opt("bagSort") or "value"
+    local nextOrder = SORTS[1]
+    for i, k in ipairs(SORTS) do
+      if k == cur then nextOrder = SORTS[i % #SORTS + 1] end
+    end
+    GW.SetOpt("bagSort", nextOrder)
+    state.rank, state.offset = nil, 0
+    scanBags()
+    renderBags()
+  end)
 
   panel.rows = {}
   local list = CreateFrame("Frame", nil, card)
@@ -1836,6 +1905,76 @@ function GW.SellItem(itemID)
   return false
 end
 
+--- Alt-click on an item in your bags while the Sell tab is open selects it there, with its usual
+--- price (goldwright-addon #21). It never posts: posting stays one click on Post.
+local lastPick
+---@param bag number|nil
+---@param slot number|nil
+local function pickFromBags(bag, slot)
+  if not (panel and panel:IsShown() and GW.activeTab == "sell" and bag and slot) then return end
+  -- One click can reach two of the hooks below: act once.
+  local key, now = bag .. ":" .. slot, GetTime()
+  if lastPick and lastPick.key == key and lastPick.at == now then return end
+  lastPick = { key = key, at = now }
+  local info = C_Container.GetContainerItemInfo(bag, slot)
+  if not (info and info.itemID) then return end
+  local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
+  if info.isBound or not (loc and loc:IsValid() and C_AuctionHouse.IsSellItemValid(loc, false)) then
+    return toast(L["That item can't be sold at the auction house."], GW.SIGNAL_ORANGE)
+  end
+  if ignored(info.itemID) and not state.showHidden then
+    return toast(L["That item is hidden on the Sell tab: show your hidden items below the list."], GW.SIGNAL_ORANGE)
+  end
+  for pass = 1, 2 do
+    for _, g in ipairs(state.bags) do
+      if g.itemID == info.itemID then return selectItem(g) end
+    end
+    if pass == 1 then -- the bags changed since the list was drawn
+      scanBags()
+      renderBags()
+    end
+  end
+end
+
+---@param button string|nil mouse button
+---@return boolean
+local function altLeftClick(button)
+  return button == "LeftButton" and IsAltKeyDown() and not IsShiftKeyDown() and not IsControlKeyDown()
+end
+
+--- The bag and slot of a bag item button (Blizzard's bags and add-ons built on its buttons).
+---@param button table
+---@return number|nil bag
+---@return number|nil slot
+local function buttonBagSlot(button)
+  local bag = button.GetBagID and button:GetBagID() or (button:GetParent() and button:GetParent():GetID())
+  return bag, button:GetID()
+end
+
+-- The same three places Auctionator listens to, so it works with Blizzard's bags and the bag add-ons
+-- that pass clicks on (Baganator, ArkInventory). Post-hooks only: the click itself is unchanged.
+if hooksecurefunc then
+  for _, fn in ipairs({ "ContainerFrameItemButton_OnClick", "ContainerFrameItemButton_OnModifiedClick" }) do
+    if _G[fn] then
+      hooksecurefunc(fn, function(self, button)
+        if altLeftClick(button) then pickFromBags(buttonBagSlot(self)) end
+      end)
+    end
+  end
+  if HandleModifiedItemClick then
+    hooksecurefunc("HandleModifiedItemClick", function(_, itemLocation)
+      if
+        itemLocation
+        and itemLocation.IsBagAndSlot
+        and itemLocation:IsBagAndSlot()
+        and altLeftClick(GetMouseButtonClicked and GetMouseButtonClicked())
+      then
+        pickFromBags(itemLocation:GetBagAndSlot())
+      end
+    end)
+  end
+end
+
 ---------------------------------------------------------------------------
 -- events
 ---------------------------------------------------------------------------
@@ -1920,7 +2059,15 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
     if not state.sel then return end
     local argItem = type(arg1) == "table" and arg1.itemID or arg1
     GW.Log("event %s (item %s)", event, tostring(argItem))
-    if argItem == nil or argItem == state.sel.itemID then readResults(type(arg1) == "table" and arg1 or nil, event) end
+    -- An item search for another suffix of the same item (Blizzard's Browse tab) isn't ours (#25).
+    -- Only when both name a suffix: a search for every suffix is sorted out row by row (GW.CollectSearchResults).
+    local theirs, ours = type(arg1) == "table" and arg1.itemSuffix or 0, state.key and state.key.itemSuffix or 0
+    local otherSuffix = theirs ~= 0 and ours ~= 0 and theirs ~= ours
+    if otherSuffix then
+      GW.Log("ignored %s: suffix %s, ours %s", event, tostring(arg1.itemSuffix), tostring(state.key.itemSuffix))
+    elseif argItem == nil or argItem == state.sel.itemID then
+      readResults(type(arg1) == "table" and arg1 or nil, event)
+    end
   elseif event == "AUCTION_HOUSE_SHOW_ERROR" or event == "AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED" then
     -- Diagnostics.lua records the error with the requests before it.
     if state.pending and event == "AUCTION_HOUSE_SHOW_ERROR" then

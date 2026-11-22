@@ -41,6 +41,7 @@ local view
 ---@field keyStr string
 ---@field itemKey table
 ---@field name string
+---@field variant string? GW.LinkVariant of the auction: its random suffix (#25)
 
 --- State of the My Auctions tab.
 ---@class CancelViewState
@@ -294,7 +295,7 @@ end
 ---@param final boolean the timeout fired: an empty result now counts as no answer
 ---@param eventName string? for the log
 local function readFor(k, final, eventName)
-  local list = GW.CollectSearchResults(k.itemKey.itemID, k.itemKey)
+  local list = GW.CollectSearchResults(k.itemKey.itemID, k.itemKey, k.variant)
   GW.Log("cancel check %s for %s: %d listings", eventName or "read", k.name, #list)
   if #list == 0 then
     -- our own auction should be in the results, so empty means no answer yet
@@ -355,7 +356,10 @@ local function startChecks(mode)
     local need = mode == "all" or not res or (mode == "stale" and (res.unknown or GetTime() - res.at > STALE))
     if need and not r.sold and not r.bidOnly and not queued[r.keyStr] then
       queued[r.keyStr] = true
-      table.insert(cv.queue, { keyStr = r.keyStr, itemKey = r.itemKey, name = r.name })
+      table.insert(
+        cv.queue,
+        { keyStr = r.keyStr, itemKey = r.itemKey, name = r.name, variant = GW.LinkVariant(r.link) }
+      )
       cv.total = cv.total + 1
       if mode == "all" then cv.results[r.keyStr] = nil end
     end

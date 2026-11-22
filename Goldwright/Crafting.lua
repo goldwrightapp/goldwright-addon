@@ -241,6 +241,7 @@ end
 ---@param side string the house the panel prices at
 ---@return GoldwrightCraftHint|nil hint nil when there is nothing to point at
 function GW.CraftHint(itemID, side)
+  if not GW.Opt("ttBetter") then return nil end -- the "pays more" hints setting (#24)
   local d = itemID and GW.ItemData(itemID)
   local other = otherHouse(side)
   local there = d and other and d[other]

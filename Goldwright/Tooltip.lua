@@ -357,10 +357,7 @@ local function tradeableLines(tt, m, h, expanded)
 
   -- TT-6 the other houses the player wants, one line each so their prices line up with ours;
   -- when Blackwater really pays more (>= 20% net, real depth, proven buyers) a line says so.
-  local function shown(side)
-    if side == h.side then return true end
-    return O(side == "N" and "ttBlackwater" or "ttOtherFaction")
-  end
+  local function shown(side) return GW.ShowHouse(side, h.side) end
   for _, side in ipairs(SIDES) do
     local d = data[side]
     if side ~= h.side and shown(side) and d and d.mv then

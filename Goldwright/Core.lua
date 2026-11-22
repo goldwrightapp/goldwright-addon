@@ -69,12 +69,18 @@ GW.DEFAULTS = {
   ttNow = true,
   ttNormal = true,
   ttTrend = true,
-  ttOtherFaction = false, -- the other faction's house in tooltips (most players can't get items there)
-  ttBlackwater = true, -- Blackwater in tooltips
-  ttBetter = true,
+  -- Other auction houses (#24): one setting per house, the same on every character; your own
+  -- faction's house is always shown (GW.ShowHouse). Tooltip, Sell tab chart line.
+  ttAlliance = false, -- off: most players can't get items to the other faction
+  ttHorde = false,
+  ttBlackwater = true,
+  ttBetter = true, -- "another house pays more" hints: tooltip, Sell tab bag tags, Crafting panel
   ttVendor = true,
   ttNoData = false, -- "No auction data yet" line for items we know nothing about
   ttSales = true, -- "You sold 34 · last 4s 90c each" (expanded view, Ledger.lua)
+  -- Sell tab
+  bagSort = "value", -- order of the bag list: "value", "name", "category" or "quantity" (#22)
+  windowScale = 1, -- size of Goldwright's windows, 0.6 to 1 (#23: Steam Deck, small screens)
   -- sales record (Ledger.lua)
   saleSound = true, -- a sound when the game says an auction sold
   mailSummary = true, -- one chat line after new auction mail is read
@@ -543,6 +549,33 @@ function GW.Daily(key, side)
   return { proven = list36(p), est = list36(e or ""), listed = list36(u or "") }, GW.pack.histFrom
 end
 
+--- Which variant of an item a link is: random-suffix gear ("of Fire Protection") shares one item id
+--- with its other suffixes, and only the link tells them apart (goldwright-addon #25). Returns the
+--- link's bonus ids sorted ("12688"), else its suffix field ("s37"), else "" for the plain item;
+--- nil without an item link.
+---@param link string|nil
+---@return string|nil variant
+function GW.LinkVariant(link)
+  local body = type(link) == "string" and link:match("item:([%-%d:]+)")
+  if not body then return nil end
+  local f, n = {}, 0
+  for x in (body .. ":"):gmatch("([^:]*):") do
+    n = n + 1
+    f[n] = tonumber(x) or 0
+  end
+  local bonus = {}
+  for b = 1, f[13] or 0 do
+    local v = f[13 + b]
+    if v and v > 0 then bonus[#bonus + 1] = v end
+  end
+  if #bonus > 0 then
+    table.sort(bonus)
+    return table.concat(bonus, ":")
+  end
+  if (f[7] or 0) ~= 0 then return "s" .. f[7] end
+  return ""
+end
+
 --- How many of an item fit in one stack, from the client's item data (nil when not loaded yet).
 ---@param itemID number
 ---@return number|nil
@@ -603,6 +636,18 @@ GW.MIN_PROVEN_PER_DAY = 5 -- ...and this many proven sales per day (partial buys
 ---@param mv number|nil market value in the house compared against
 ---@param fromSide string|nil the house compared against (default: the player's own)
 ---@return number|nil gain the % gain, rounded; nil when the other house isn't clearly better
+GW.HOUSE_OPTION = { A = "ttAlliance", H = "ttHorde", N = "ttBlackwater" }
+
+--- Whether another house's prices are shown (the Other auction houses settings, #24). Your own
+--- faction's house, and the house you're standing at, always are.
+---@param side string "A", "H" or "N"
+---@param at string|nil the house the screen is about (the auction house you're at), if any
+---@return boolean
+function GW.ShowHouse(side, at)
+  if side == (GW.house and GW.house.side) or side == at then return true end
+  return GW.Opt(GW.HOUSE_OPTION[side]) and true or false
+end
+
 function GW.BetterHouse(d, side, mv, fromSide)
   if not (d and mv and mv > 0 and d.mv and (d.units or 0) >= GW.MIN_UNITS_FOR_HINT) then return nil end
   if (d.boughtPerDay or 0) < GW.MIN_PROVEN_PER_DAY then return nil end
@@ -724,6 +769,11 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if GoldwrightDB.opt.ttOthers ~= nil then -- 0.7.1 split "Other houses" into a setting per house
       if GoldwrightDB.opt.ttOthers == false then GoldwrightDB.opt.ttBlackwater = false end
       GoldwrightDB.opt.ttOthers = nil
+    end
+    if GoldwrightDB.opt.ttOtherFaction ~= nil then -- 0.7.5 (#24): one setting per faction's house
+      GoldwrightDB.opt.ttAlliance = GoldwrightDB.opt.ttOtherFaction
+      GoldwrightDB.opt.ttHorde = GoldwrightDB.opt.ttOtherFaction
+      GoldwrightDB.opt.ttOtherFaction = nil
     end
     GW.ApplyOptions()
   elseif event == "PLAYER_LOGIN" then

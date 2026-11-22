@@ -320,7 +320,8 @@ end
 -- SELL-15: price history
 ---------------------------------------------------------------------------
 
---- The other houses' market prices for the legend: "Horde 3s 90c · Blackwater none listed".
+--- The other houses' market prices for the legend: "Horde 3s 90c · Blackwater none listed". Only
+--- the houses turned on in the Other auction houses settings (#24); "" when none are.
 ---@param itemID number
 ---@return string
 local function otherHouses(itemID)
@@ -328,7 +329,7 @@ local function otherHouses(itemID)
   if not d then return "" end
   local parts = {}
   for _, s in ipairs({ "A", "H", "N" }) do
-    if s ~= side() then
+    if s ~= side() and GW.ShowHouse(s, side()) then
       local there = d[s]
       parts[#parts + 1] = (there and there.mv) and string.format("%s %s", GW.HOUSE_NAMES[s], GW.Money(there.mv))
         or string.format(L["%s none listed"], GW.HOUSE_NAMES[s])

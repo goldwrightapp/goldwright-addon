@@ -59,6 +59,7 @@ local function check(label, key, tip)
     text:SetPoint("LEFT", cb, "RIGHT", 4, 0)
   end
   text:SetText(label)
+  cb.label = text
   cb:SetScript("OnClick", function(self) GW.SetOpt(key, self:GetChecked() and true or false) end)
   if tip then
     cb:SetScript("OnEnter", function(self)
@@ -232,13 +233,6 @@ local function build()
     "ttTrend",
     L["How fast it sells (proven sales, else an estimate) and how the average price moved this week."]
   )
-  check(
-    GW.House().side == "H" and L["Alliance prices"] or L["Horde prices"],
-    "ttOtherFaction",
-    L["The other faction's auction house. Off by default: you can't mail items to the other faction."]
-  )
-  check(L["Blackwater prices"], "ttBlackwater", L["The neutral auction house, open to both factions."])
-  check(L["Blackwater pays more"], "ttBetter", L["Only shown with real depth and proven buyers at the other house."])
   check(L["Vendor comparison"], "ttVendor")
   check(
     L["Your sales (expanded view)"],
@@ -252,6 +246,41 @@ local function build()
     { { "SHIFT", L["Shift"] }, { "CTRL", L["Ctrl"] }, { "ALT", L["Alt"] }, { "NONE", L["None"] } }
   )
   choice(L["Money"], "money", { { "coins", L["Coin Icons"] }, { "letters", L["1g 23s 47c"] } })
+
+  -- #24: one box per house with a fixed meaning; your own faction's box is ticked and locked.
+  heading(L["Other auction houses"])
+  local own = function() return GW.house and GW.house.side end
+  for _, h in ipairs({
+    { "A", L["Alliance prices"], L["Alliance auction house prices in tooltips and under the Sell tab's chart."] },
+    { "H", L["Horde prices"], L["Horde auction house prices in tooltips and under the Sell tab's chart."] },
+    {
+      "N",
+      L["Blackwater prices"],
+      L["The neutral auction house, open to both factions: in tooltips and under the Sell tab's chart."],
+    },
+  }) do
+    local side, label = h[1], h[2]
+    local cb = check(label, GW.HOUSE_OPTION[side])
+    note(h[3])
+    table.insert(controls, function()
+      local mine = own() == side
+      local text = cb.label
+      if text then
+        text:SetText(mine and string.format(L["%s (your faction, always shown)"], label) or label)
+        text:SetFontObject(mine and "GameFontDisable" or "GameFontHighlight")
+      end
+      if mine then
+        cb:SetChecked(true)
+        cb:Disable()
+      else
+        cb:Enable()
+      end
+    end)
+  end
+  check(L["Hint when another house pays more"], "ttBetter")
+  note(
+    L["When Blackwater (or, at Blackwater, your faction's house) pays clearly more after cuts, with proven buyers: in tooltips, on the Sell tab's bag list and in the Crafting panel."]
+  )
 
   heading(L["Signals"])
   number(L["Tooltip signal outside"], "signalPct", 1, 90, L["% of average"], string.format(L["default %d"], 15))
@@ -294,6 +323,13 @@ local function build()
   -- Goldwright's own look (Skin.lua): Blizzard flat or Goldwright dark.
   heading(L["Look"])
   choice(L["Window look"], "look", { { "blizzard", L["Blizzard"] }, { "dark", L["Goldwright dark"] } })
+  -- #23: smaller windows for the Steam Deck and small screens; applies at once
+  choice(
+    L["Window size"],
+    "windowScale",
+    { { 0.6, "60%" }, { 0.7, "70%" }, { 0.8, "80%" }, { 0.9, "90%" }, { 1, "100%" } },
+    function() UI.ApplyWindowScale() end
+  )
   note(L["Takes effect after /reload. With ElvUI or EllesmereUI, their look comes first."], 20)
   -- Only with ElvUI installed: Goldwright's windows take ElvUI's look (UI.Skin in UI.lua).
   if type(ElvUI) == "table" then
