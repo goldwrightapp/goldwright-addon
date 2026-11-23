@@ -11,10 +11,9 @@ local L = GW.L
 local W, H = 1000, 590
 local ROWS, ROW_H = 11, 38 -- bag list
 local HEAD_H = 20 -- bag list: a category heading when sorted by Category (#22)
-local LADDER_ROWS, LADDER_H = 10, 18 -- cheapest listings
-local BAGS_W = 252 -- the bags card
+local BAGS_W = GW.MarketCard.LIST_W -- the bags card
 local NAME_X = 46 -- bag rows: where the name starts, after the item icon
-local MARKET_H = 300 -- the market card; the listing card takes the rest
+local MARKET_H = GW.MarketCard.HEIGHT -- the market card; the listing card takes the rest
 local DURATIONS = { { idx = 1, label = L["2h"] }, { idx = 2, label = L["8h"] }, { idx = 3, label = L["24h"] } }
 --- The two strategies (#15). Fast posts at the undercut setting's price (default: match the cheapest
 --- listing; same-price listings sell newest first); Patient about 10% above the market price.
@@ -24,6 +23,7 @@ local STRATEGIES = {
 }
 local TABS = {
   { key = "sell", label = L["Sell"] },
+  { key = "buy", label = L["Buy"] }, -- BuyView.lua (#37)
   { key = "cancel", label = L["My Auctions"] },
   { key = "shopping", label = L["Shopping"] },
   { key = "scan", label = L["Scan"] },
@@ -212,15 +212,6 @@ local function toast(text, color) UI.Toast(panel, text, color) end
 ---@return boolean|nil
 local function ignored(itemID) return GoldwrightDB.ignore and GoldwrightDB.ignore[itemID] end
 
---- "~140" items sold per day (one decimal under 10), "–" when unknown.
----@param here table|nil
----@return string
-local function perDayText(here)
-  local n = GW.SellRate(here)
-  if not n then return "–" end
-  return "~" .. (n >= 10 and GW.Number(math.floor(n + 0.5)) or GW.Decimal(n))
-end
-
 ---------------------------------------------------------------------------
 -- your bags (SELL-1, SELL-2)
 ---------------------------------------------------------------------------
@@ -357,6 +348,7 @@ local function scanBags()
         isCommodity = Enum and Enum.ItemCommodityStatus and status == Enum.ItemCommodityStatus.Commodity,
       }
       g.category, g.subCategory = categoryOf(info.itemID)
+      if not variant then GW.ItemNames.Note(info.itemID, g.name) end -- for the Buy lookup
       groups[key] = g
       if g.hidden then hidden = hidden + 1 end
       if not g.hidden or state.showHidden then list[#list + 1] = g end
@@ -472,6 +464,29 @@ local function offsetEnding(entries, last)
     first = first - 1
   end
   return math.max(0, first)
+end
+
+--- Scrolls the bag list as little as needed to show an item, with its heading when sorted by
+--- Category (#39). An item already in view leaves the list where it is.
+---@param g table
+local function scrollTo(g)
+  local entries = bagEntries()
+  local at
+  for i, e in ipairs(entries) do
+    if e == g then at = i end
+  end
+  if not at then return end
+  local top = (entries[at - 1] and entries[at - 1].head) and at - 1 or at
+  if top <= state.offset then -- above the view
+    state.offset = top - 1
+    return
+  end
+  local y, last = 0, state.offset -- the last entry in view
+  while entries[last + 1] and y + entryHeight(entries[last + 1]) <= ROWS * ROW_H do
+    last = last + 1
+    y = y + entryHeight(entries[last])
+  end
+  if at > last then state.offset = offsetEnding(entries, at) end -- below the view
 end
 
 --- Redraws the bag list: rows with the stack's price and a note, the item count, the footer and the
@@ -685,14 +700,14 @@ local function recalc()
   -- new listing goes first among its own price). A count, not a forecast: others keep posting.
   local here = packFor(g)
   local cheaper
-  if state.stats and unit > 0 then
+  if GW.MarketCard.Stats() and unit > 0 then
     cheaper = 0
-    for _, l in ipairs(state.stats.sorted) do
+    for _, l in ipairs(GW.MarketCard.Stats().sorted) do
       if not l.own and l.price < unit then cheaper = cheaper + l.qty end
     end
   end
   -- too slow for the auction: more listed at or below this price than usually sells in its time
-  local hours = GW.TimeToSell(state.stats and state.stats.sorted, unit, qty, (GW.SellRate(here)))
+  local hours = GW.TimeToSell(GW.MarketCard.Stats() and GW.MarketCard.Stats().sorted, unit, qty, (GW.SellRate(here)))
   local auctionHours = GW.DURATION_HOURS[state.duration]
   local tooSlow = hours and auctionHours and hours > auctionHours
   panel.sellTime:SetText(
@@ -706,7 +721,7 @@ local function recalc()
   -- paying more, or too slow for the auction's duration.
   local ref, messages = normalPrice(here), PRICE_CHECK.normal
   if not ref then
-    ref, messages = (state.stats and state.stats.mv) or (here and here.mv), PRICE_CHECK.market
+    ref, messages = (GW.MarketCard.Stats() and GW.MarketCard.Stats().mv) or (here and here.mv), PRICE_CHECK.market
   end
   local warn = ""
   local kind, pct = GW.PriceCheck(unit, ref)
@@ -732,7 +747,7 @@ local function recalc()
   setWarning(warn)
 
   -- Only data-pack prices so far (live listings still loading): wait, unless the player typed a price.
-  local loading = state.searching and not state.stats and not state.typed
+  local loading = GW.MarketCard.Searching() and not GW.MarketCard.Stats() and not state.typed
   local p = state.pending
   local confirmWait = p and p.warning and GetTime() - (p.warnedAt or 0) < GW.CONFIRM_DELAY
   panel.post:SetText(
@@ -748,7 +763,7 @@ end
 --- Sets state.prices for the selected item from live listings (or the data pack while they load);
 --- nil when there is no price at all.
 local function computePrices()
-  local g, s = state.sel, state.stats
+  local g, s = state.sel, GW.MarketCard.Stats()
   local cheapest, market, own
   if s then
     local first = s.sorted[s.firstRealIndex]
@@ -790,17 +805,18 @@ local function applyDefaultStrategy()
     recalc()
     return
   end
-  local P, s = state.prices, state.stats
+  local P, s = state.prices, GW.MarketCard.Stats()
   if not P then
     state.strategy = nil
     setUnitPrice(0)
     setWhy(
-      state.searching and L["Live listings loading…"] or L["No listings and no price data: type your own price."]
+      GW.MarketCard.Searching() and L["Live listings loading…"]
+        or L["No listings and no price data: type your own price."]
     )
     recalc()
     return
   end
-  local loading = state.searching and not s and (L["Data pack prices while live listings load."] .. " ") or ""
+  local loading = GW.MarketCard.Searching() and not s and (L["Data pack prices while live listings load."] .. " ") or ""
   local bait = (s and s.baitUnits > 0)
       and (" " .. GW.Plural(
         s.baitUnits,
@@ -835,234 +851,6 @@ local function applyDefaultStrategy()
   else
     chooseStrategy("fast", loading .. GW.FastText(GW.Money(P.cheapest)) .. bait)
   end
-end
-
----------------------------------------------------------------------------
--- the market card (SELL-3, 15, 16)
----------------------------------------------------------------------------
---- The note a cheapest-listings row carries (its tooltip and its colour).
----@param s table market stats
----@param i number row index
----@return string|nil note
----@return number[] color price colour
-local function ladderNote(s, i)
-  local x = s.sorted[i]
-  if i < s.firstRealIndex then return L["likely bait, skipped"], T.faint end
-  if x.own then return L["yours"], T.gold end
-  if i == s.firstRealIndex then return L["cheapest real seller"], T.text end
-  return nil, T.text
-end
-
---- Redraws the market card's numbers: Lowest now, Normal (last 7 days), Sold per day, and the
---- cheapest listings with their quantities and the total listed (#11).
-local function renderMarket()
-  local g, s = state.sel, state.stats
-  if not g then return end
-  local here = packFor(g)
-  local lowest = (s and s.sorted[s.firstRealIndex].price) or (here and here.min)
-  panel.lowest:SetText(lowest and GW.Money(lowest) or "–")
-  panel.normal:SetText(here and here.avg7 and GW.Money(here.avg7) or "–")
-  panel.perDay:SetText(perDayText(here))
-  -- what the number counts, and whether it is an estimate (gear: listings gone early)
-  local n, proven = GW.SellRate(here)
-  panel.perDayHit.tip = not n and { L["No sales data for this item yet."] }
-    or {
-      string.format(L["Items bought per day at %s, average of the last 10 days."], GW.HOUSE_NAMES[sellSide()]),
-      not proven and L["Estimate: counts listings that went early, so some may have been cancelled."] or nil,
-    }
-
-  local maxQty, total = 1, 0
-  if s then
-    for i, x in ipairs(s.sorted) do
-      total = total + x.qty
-      if i <= LADDER_ROWS and x.qty > maxQty then maxQty = x.qty end
-    end
-  end
-  for i, r in ipairs(panel.ladder) do
-    local x = s and s.sorted[i]
-    if x then
-      local note, color = ladderNote(s, i)
-      r.note = note
-      r.price:SetText(GW.Money(x.price, true))
-      setColor(r.price, color)
-      r.qty:SetText(GW.Number(x.qty))
-      UI.SetBar(r.bar, x.qty / maxQty)
-      r:Show()
-    else
-      r.note = nil
-      r:Hide()
-    end
-  end
-  panel.listTotal:SetText(s and GW.PluralCount(total, "%s listed", "%s listed") or "")
-end
-
----------------------------------------------------------------------------
--- search
----------------------------------------------------------------------------
---- Listings for an item from the last search, commodity results first, else item results.
---- Shared with the My Auctions tab.
----@param itemID number
----@param itemKey table? item key for item (non-commodity) results
----@param variant string? GW.LinkVariant of the item being priced: item rows of another random suffix
---- are left out. A search (Blizzard's Sell window's above all) can return every suffix of the item,
---- and they share one item id (goldwright-addon #25). "" or nil keeps every row.
----@return { price: number, qty: number, own: boolean?, ownQty: number? }[] list price is per unit
----@return string|nil source "commodity", "item" or nil when empty
----@return number commodityCount number of commodity results the client reported
----@return number itemCount number of item results the client reported
-function GW.CollectSearchResults(itemID, itemKey, variant)
-  local list = {}
-  local nc = C_AuctionHouse.GetNumCommoditySearchResults(itemID) or 0
-  for i = 1, nc do
-    local r = C_AuctionHouse.GetCommoditySearchResultInfo(itemID, i)
-    if r then
-      local ownQty = r.numOwnerItems or 0
-      list[#list + 1] = {
-        price = r.unitPrice,
-        qty = r.quantity,
-        own = r.containsOwnerItem or ownQty > 0,
-        ownQty = ownQty > 0 and ownQty or nil,
-      }
-    end
-  end
-  if #list > 0 then return list, "commodity", nc, 0 end
-  -- Item (non-commodity) results group identical auctions into one row: `quantity` is how many
-  -- there are and `buyoutAmount` the price of each, not of the row (goldwright-addon #5: dividing
-  -- by the count turned 31 Expert Cookbooks at 94s 99c into "3s 6c each"). Only an item that
-  -- stacks would carry a whole-stack buyout; on this auction house those are commodities.
-  local ni = itemKey and (C_AuctionHouse.GetNumItemSearchResults(itemKey) or 0) or 0
-  local stacks = itemKey and GW.MaxStack and (GW.MaxStack(itemKey.itemID) or 1) > 1
-  local other = 0
-  for i = 1, ni do
-    local r = C_AuctionHouse.GetItemSearchResultInfo(itemKey, i)
-    if r and r.buyoutAmount and (r.quantity or 0) > 0 then
-      local rv = variant and variant ~= "" and r.itemLink and GW.LinkVariant(r.itemLink)
-      if rv and rv ~= variant then
-        other = other + r.quantity -- another suffix of the item
-      else
-        local each = stacks and math.floor(r.buyoutAmount / r.quantity + 0.5) or r.buyoutAmount
-        list[#list + 1] = { price = each, qty = r.quantity, own = r.containsOwnerItem }
-      end
-    end
-  end
-  if other > 0 then GW.Log("left out %d listings of other suffixes (item %s, %s)", other, tostring(itemID), variant) end
-  return list, #list > 0 and "item" or nil, nc, ni
-end
-
---- Reads the selected item's search results into state.stats and redraws. An empty result while the
---- search is still running is ignored (no answer yet).
----@param itemKeyFromEvent table? the item key an item-results event carried
----@param eventName string? for the log
-local function readResults(itemKeyFromEvent, eventName)
-  local g = state.sel
-  if not g then return end
-  local list, source, nc, ni = GW.CollectSearchResults(g.itemID, itemKeyFromEvent or state.key, g.variant)
-  GW.Log(
-    "%s for %s: %d listings (%s; commodity n=%s, item n=%s)",
-    eventName or "read",
-    g.name,
-    #list,
-    tostring(source),
-    tostring(nc),
-    tostring(ni)
-  )
-  if eventName and not eventName:find("^timeout") then state.answered = true end
-  if #list == 0 and state.searching then return end
-  state.searching = false
-  local recent = GW.RecentPrice(g.packKey, sellSide())
-  state.stats = GW.MarketStats(list, recent)
-  GW.SellCharts.Listings(g.packKey, state.stats) -- the Market window's Supply tab
-  GW.NoteBaitSearch(g.itemID, g.name, sellSide(), state.stats, recent)
-  panel.listStatus:SetText(state.stats and L["searched just now"] or L["no other listings"])
-  renderMarket()
-  applyDefaultStrategy()
-  -- the bag row follows the live price too, so its note and the listing's warning agree
-  if state.stats and state.prices then
-    state.live[g.key] = state.prices.fast
-    g.unit, g.total = state.prices.fast, state.prices.fast * g.count
-    renderBags()
-  end
-end
-
---- Sends a search for state.key, sorted by price; counts it against the search limit.
----@param kind string "sell" for SendSellSearchQuery, anything else for SendSearchQuery
-local function sendQuery(kind)
-  local sorts = GW.PriceSorts()
-  GW.NoteSearch()
-  if kind == "sell" then
-    C_AuctionHouse.SendSellSearchQuery(state.key, sorts, true)
-  else
-    C_AuctionHouse.SendSearchQuery(state.key, sorts, true)
-  end
-  GW.Log(
-    "sent %s search for %s (itemID %d, commodity=%s)",
-    kind,
-    state.sel.name,
-    state.sel.itemID,
-    tostring(state.sel.isCommodity)
-  )
-end
-
---- Searches the live listings for a bag item, waiting for the search throttle if needed. Shows data
---- pack prices until the answer arrives; gives up after 8 seconds.
----@param g SellBagItem
-local search
-search = function(g)
-  -- Use the exact item key of the item in your bag (with suffix and item level): searching
-  -- random-suffix gear ("of the Falcon") by item id alone got no answer in game.
-  local key
-  local loc = findLocation(g.itemID, g.variant) or g.loc
-  if loc and C_AuctionHouse.GetItemKeyFromItem then
-    local ok, k = pcall(C_AuctionHouse.GetItemKeyFromItem, loc)
-    if ok then key = k end
-  end
-  state.key = key or C_AuctionHouse.MakeItemKey(g.itemID)
-  GW.Log(
-    "item key for %s: id %s, level %s, suffix %s",
-    g.name,
-    tostring(state.key.itemID),
-    tostring(state.key.itemLevel),
-    tostring(state.key.itemSuffix)
-  )
-  state.stats = nil
-  state.searching = true
-  state.answered = false
-  state.token = (state.token or 0) + 1
-  local token = state.token
-  renderMarket()
-  applyDefaultStrategy()
-  if not GW.CanSearch() then
-    -- throttled: wait for a slot instead of firing anyway (§3.5)
-    panel.listStatus:SetText(GW.WaitText())
-    GW.Log("sell search waiting: %s", tostring(GW.SearchBlocked()))
-    C_Timer.After(GW.SEARCH_RETRY, function()
-      if state.token == token and state.sel == g and panel:IsShown() then search(g) end
-    end)
-    return
-  end
-  panel.listStatus:SetText(L["searching…"])
-  -- The normal search answers within a second on Forever; the sell search never answered in game
-  -- (log 2026-11-10: every sell search timed out, the general one then answered at once), so the
-  -- sell search is only the fallback after 4 seconds.
-  sendQuery("general")
-  C_Timer.After(4, function()
-    if state.token ~= token or not state.searching then return end
-    readResults(nil, "timeout-4s")
-    if state.searching and GW.CanSearch() then sendQuery("sell") end
-  end)
-  C_Timer.After(8, function()
-    if state.token ~= token or not state.searching then return end
-    state.searching = false
-    readResults(nil, "timeout-8s")
-    if not state.stats then
-      -- The auction house did answer, with nothing: none listed here (e.g. at Blackwater).
-      panel.listStatus:SetText(
-        state.answered and string.format(L["none listed at %s right now"], GW.HOUSE_NAMES[sellSide()])
-          or L["no answer from the auction house"]
-      )
-      applyDefaultStrategy()
-    end
-  end)
 end
 
 --- Redraws the status bar (AH-2): house, how old the prices are (in orange when the data pack is
@@ -1113,12 +901,24 @@ end
 --- Deselects the item, stops its search timers and shows a message in the market card instead.
 ---@param message string? text to show (default: "Choose an item on the left...")
 local function clearSelection(message)
-  state.sel, state.stats, state.strategy, state.token = nil, nil, nil, (state.token or 0) + 1
-  panel.col2:Hide()
+  state.sel, state.strategy = nil, nil
+  GW.MarketCard.Clear(message or L["Choose an item on the left to see its market and price it."])
   panel.col3:Hide()
-  panel.empty:SetText(message or L["Choose an item on the left to see its market and price it."])
-  panel.empty:Show()
   renderBags()
+end
+
+--- What the market card hears about from the Sell tab's point of view: a search started or ended
+--- (re-price the listing), listings arrived (the bag row follows the live price too, so its note and
+--- the listing's warning agree).
+---@param what string "started", "results" or "none"
+local function onMarket(what)
+  applyDefaultStrategy()
+  local g, s = state.sel, GW.MarketCard.Stats()
+  if what == "results" and g and s and state.prices then
+    state.live[g.key] = state.prices.fast
+    g.unit, g.total = state.prices.fast, state.prices.fast * g.count
+    renderBags()
+  end
 end
 
 --- Selects a bag item: fills the market and listing cards, restores its remembered duration, draws
@@ -1126,19 +926,8 @@ end
 ---@param g SellBagItem
 local function selectItem(g)
   state.sel = g
-  state.stats = nil
   state.strategy = nil
   state.typed = nil
-  panel.iconButton.tex:SetTexture(g.icon or 134400)
-  panel.itemName:SetText(g.name)
-  setColor(panel.itemName, qualityColor(g.quality))
-  panel.itemInfo:SetText(
-    string.format(
-      L["You have %d · %s"],
-      g.count,
-      g.isCommodity and L["posts as one listing"] or L["one auction per click"]
-    )
-  )
   panel.qty:SetText(tostring(g.isCommodity and g.count or 1))
   if g.isCommodity then
     panel.qty:Enable()
@@ -1149,12 +938,34 @@ local function selectItem(g)
   local remembered = GoldwrightDB.durations and GoldwrightDB.durations[g.itemID]
   setDuration(remembered or GW.Opt("duration"))
   toast("")
-  panel.col2:Show()
   panel.col3:Show()
-  panel.empty:Hide()
-  GW.SellCharts.Render(g.packKey, g.name)
   renderBags()
-  search(g)
+  -- Search with the exact item key of the item in your bag (with suffix and item level): searching
+  -- random-suffix gear ("of the Falcon") by item id alone got no answer in game.
+  local key
+  local loc = findLocation(g.itemID, g.variant) or g.loc
+  if loc and C_AuctionHouse.GetItemKeyFromItem then
+    local ok, k = pcall(C_AuctionHouse.GetItemKeyFromItem, loc)
+    if ok then key = k end
+  end
+  GW.MarketCard.Show(
+    {
+      itemID = g.itemID,
+      packKey = g.packKey,
+      name = g.name,
+      icon = g.icon,
+      quality = g.quality,
+      variant = g.variant,
+      itemKey = key,
+      bag = g.bag,
+      slot = g.slot,
+    },
+    string.format(
+      L["You have %d · %s"],
+      g.count,
+      g.isCommodity and L["posts as one listing"] or L["one auction per click"]
+    )
+  )
 end
 
 --- Error names (from GetGameMessageInfo) that can answer a post: auction house errors and money.
@@ -1213,11 +1024,7 @@ local function tryAdvance()
   end
   local nextItem = GW.NextInQueue(a.order, visible, a.key or a.itemID, a.keepSame)
   if nextItem then
-    -- scroll so the next item is in view (headings count too when sorted by Category)
-    state.offset = 0
-    for i, e in ipairs(bagEntries()) do
-      if e == nextItem then state.offset = offsetEnding(bagEntries(), i) end
-    end
+    scrollTo(nextItem)
     local message, color = panel.toast:GetText(), { panel.toast:GetTextColor() }
     selectItem(nextItem)
     toast(message, color) -- "Posted …" stays while the next item loads
@@ -1308,7 +1115,7 @@ local function postSelected()
     at = GetTime(),
   }
   local token = state.pending
-  state.token, state.searching = (state.token or 0) + 1, false -- the item's search timers stop here
+  GW.MarketCard.StopSearch() -- the item's search timers stop here
   if g.isCommodity then
     C_AuctionHouse.PostCommodity(loc, state.duration, qty, unit)
   else
@@ -1331,7 +1138,7 @@ GW.PostSelected = postSelected
 -- tabs
 ---------------------------------------------------------------------------
 --- Tabs that work away from the auction house (the rest are greyed out there, with a tooltip).
-local ANYWHERE = { shopping = true }
+local ANYWHERE = { shopping = true, buy = true }
 
 --- Enables each tab button: all at the auction house, only ANYWHERE tabs elsewhere.
 local function updateTabs()
@@ -1351,33 +1158,25 @@ local function showTab(key)
   for _, b in ipairs(panel.tabButtons) do
     UI.SetSelected(b, b.key == key)
   end
+  -- Hide the other tabs first, then show this one: a tab being left lets go of its price waiting
+  -- for Confirm before the new tab asks the auction house anything (My Auctions' request with a
+  -- purchase still open got "Internal auction error").
+  local views = { buy = GW.BuyView, cancel = GW.CancelView, scan = GW.ScanView, shopping = GW.ShopView }
+  for k, v in pairs(views) do
+    if k ~= key then v.Hide() end
+  end
   panel.sellView:SetShown(key == "sell")
-  if GW.CancelView then
-    if key == "cancel" then
-      GW.CancelView.Show(panel.inset)
-    else
-      GW.CancelView.Hide()
-    end
-  end
-  if GW.ScanView then
-    if key == "scan" then
-      GW.ScanView.Show(panel.inset)
-    else
-      GW.ScanView.Hide()
-    end
-  end
-  if GW.ShopView then
-    if key == "shopping" then
-      GW.ShopView.Show(panel.inset)
-    else
-      GW.ShopView.Hide()
-    end
-  end
+  if views[key] then views[key].Show(panel.inset) end
   renderStatus()
   if key == "sell" then
+    GW.MarketCard.Attach(panel.sellView, onMarket, BAGS_W + 14, MARKET_H)
     scanBags()
     renderBags()
-    if state.sel then recalc() end
+    if state.sel then
+      selectItem(state.sel) -- the card may have shown another tab's item: show ours again
+    else
+      clearSelection()
+    end
   end
 end
 
@@ -1478,6 +1277,7 @@ end
 ---@param view table the Sell view
 local function buildBags(view)
   local card = UI.Card(view)
+  panel.bagsCard = card
   card:SetPoint("TOPLEFT", 6, -6)
   card:SetPoint("BOTTOMLEFT", 6, 6)
   card:SetWidth(BAGS_W)
@@ -1629,119 +1429,6 @@ end
 
 --- Builds the market card: the item and its three numbers, the chart, and the cheapest listings.
 ---@param card table
-local function buildMarket(card)
-  local col2 = CreateFrame("Frame", nil, card)
-  col2:SetAllPoints()
-  panel.col2 = col2
-  local width = W - 16 - BAGS_W - 20 -- the card's width
-  local split = width - 238 -- chart | cheapest listings
-
-  panel.iconButton = CreateFrame("Button", nil, col2)
-  panel.iconButton:SetSize(36, 36)
-  panel.iconButton:SetPoint("TOPLEFT", 12, -11)
-  panel.iconButton.tex = panel.iconButton:CreateTexture(nil, "ARTWORK")
-  panel.iconButton.tex:SetAllPoints()
-  panel.iconButton.tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-  panel.iconButton:SetScript("OnEnter", function(self)
-    if not state.sel then return end
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetBagItem(state.sel.bag, state.sel.slot)
-    GameTooltip:Show()
-  end)
-  panel.iconButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
-  panel.itemName = UI.FontString(col2, "GameFontNormalLarge", "LEFT")
-  panel.itemName:SetPoint("TOPLEFT", 58, -12)
-  panel.itemName:SetWidth(300)
-  panel.itemName:SetWordWrap(false)
-  panel.itemInfo = UI.Text(col2, "GameFontHighlightSmall", "muted", "LEFT")
-  panel.itemInfo:SetPoint("TOPLEFT", 58, -32)
-
-  -- three numbers, each a label over one big value
-  local stats = {
-    { L["Lowest now"], "lowest", 100 },
-    { L["Normal, last 7 days"], "normal", 124 },
-    { L["Sold per day"], "perDay", 84 },
-  }
-  local x = width - 12
-  for i = #stats, 1, -1 do
-    local s = stats[i]
-    x = x - s[3]
-    local lab = UI.Text(col2, "GameFontNormalSmall", "label", "LEFT")
-    lab:SetPoint("TOPLEFT", x, -12)
-    lab:SetText(s[1])
-    local val = UI.Text(col2, "GameFontHighlightLarge", "text", "LEFT")
-    val:SetPoint("TOPLEFT", x, -28)
-    panel[s[2]] = val
-    x = x - 8
-  end
-  -- hovering Sold per day says what it counts (renderMarket fills .tip)
-  local hit = CreateFrame("Frame", nil, col2)
-  hit:SetPoint("TOPLEFT", panel.perDay, "TOPLEFT", 0, 18)
-  hit:SetSize(84, 44)
-  hit:EnableMouse(true)
-  hit:SetScript("OnEnter", function(self)
-    if not self.tip then return end
-    GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-    GameTooltip:SetText(L["Sold per day"], 1, 1, 1)
-    for _, line in ipairs(self.tip) do
-      GameTooltip:AddLine(line, nil, nil, nil, true)
-    end
-    GameTooltip:Show()
-  end)
-  hit:SetScript("OnLeave", function() GameTooltip:Hide() end)
-  panel.perDayHit = hit
-  local rule = UI.Rule(col2)
-  rule:SetPoint("TOPLEFT", 1, -58)
-  rule:SetPoint("TOPRIGHT", -1, -58)
-  rule:SetHeight(1)
-  local v = UI.Rule(col2)
-  v:SetPoint("TOPLEFT", split, -58)
-  v:SetPoint("BOTTOMLEFT", split, 1)
-  v:SetWidth(1)
-
-  -- the chart: price history or best time to post (SellCharts.lua)
-  GW.SellCharts.Create(col2, { x = 12, y = -68, w = split - 24, h = MARKET_H - 68 - 6 })
-  panel.charts = GW.SellCharts
-
-  -- cheapest listings: price each | quantity bar | quantity
-  local lx = split + 12
-  local lw = width - lx - 12
-  UI.Caption(col2, L["Cheapest listings"], lx, -71)
-  panel.ladder = {}
-  for i = 1, LADDER_ROWS do
-    local r = CreateFrame("Frame", nil, col2)
-    r:SetSize(lw, LADDER_H)
-    r:SetPoint("TOPLEFT", lx, -92 - (i - 1) * LADDER_H)
-    r:EnableMouse(true)
-    local line = UI.Rule(r, "rowLine")
-    line:SetPoint("TOPLEFT")
-    line:SetPoint("TOPRIGHT")
-    line:SetHeight(1)
-    r.price = UI.FontString(r, "GameFontHighlightSmall", "RIGHT")
-    r.price:SetPoint("LEFT", 0, 0)
-    r.price:SetWidth(78)
-    r.bar = UI.Bar(r, lw - 78 - 8 - 40, 6)
-    r.bar:SetPoint("LEFT", 86, 0)
-    r.qty = UI.Text(r, "GameFontHighlightSmall", "muted", "RIGHT")
-    r.qty:SetPoint("RIGHT", 0, 0)
-    r.qty:SetWidth(38)
-    r:SetScript("OnEnter", function(self)
-      if not self.note then return end
-      GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-      GameTooltip:SetText(self.note)
-      GameTooltip:Show()
-    end)
-    r:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    r:Hide()
-    panel.ladder[i] = r
-  end
-  local y = -92 - LADDER_ROWS * LADDER_H - 6
-  panel.listTotal = UI.Text(col2, "GameFontHighlightSmall", "muted", "LEFT")
-  panel.listTotal:SetPoint("TOPLEFT", lx, y)
-  panel.listStatus = UI.Text(col2, "GameFontDisableSmall", "faint", "RIGHT")
-  panel.listStatus:SetPoint("TOPRIGHT", col2, "TOPLEFT", lx + lw, y)
-end
-
 --- Builds the listing card: strategies and the warning | price, quantity, duration | what you get
 --- and Post.
 ---@param card table
@@ -1959,20 +1646,15 @@ local function createPanel()
   panel.sellView = view
 
   buildBags(view)
-  local market = UI.Card(view)
-  market:SetPoint("TOPLEFT", BAGS_W + 14, -6)
-  market:SetPoint("TOPRIGHT", -6, -6)
-  market:SetHeight(MARKET_H)
+  -- the market card (MarketCard.lua), shared with the Buy tab: whichever tab is shown attaches it
+  GW.MarketCard.Build(view, panel, GW.MarketCard.WIDTH, MARKET_H)
+  GW.MarketCard.Attach(view, onMarket, BAGS_W + 14, MARKET_H)
+  GW.MarketCard.Clear(L["Choose an item on the left to see its market and price it."])
   local listing = UI.Card(view)
-  listing:SetPoint("TOPLEFT", market, "BOTTOMLEFT", 0, -8)
+  listing:SetPoint("TOPLEFT", BAGS_W + 14, -(6 + MARKET_H + 8))
   listing:SetPoint("BOTTOMRIGHT", -6, 6)
-  panel.empty = UI.Text(view, "GameFontHighlight", "muted", "CENTER")
-  panel.empty:SetPoint("CENTER", market, "CENTER", 0, 0)
-  panel.empty:SetWidth(500)
-  panel.empty:SetText(L["Choose an item on the left to see its market and price it."])
-  buildMarket(market)
+  panel.listingCard = listing
   buildListing(listing)
-  panel.col2:Hide()
   panel.col3:Hide()
 
   -- HookScript, not SetScript: UI.Window hooks these too (raise, controller window list).
@@ -1980,12 +1662,13 @@ local function createPanel()
     state.rank = nil -- fresh value order for each visit to the auction house
     state.live = {} -- and data pack prices until each item is searched again
     local t = GW.activeTab
-    showTab((t == "cancel" or t == "scan" or t == "shopping") and t or "sell")
+    showTab((t == "cancel" or t == "scan" or t == "shopping" or t == "buy") and t or "sell")
   end)
   panel:HookScript("OnHide", function()
     if GW.CancelView then GW.CancelView.Hide() end
     if GW.ScanView then GW.ScanView.Hide() end
     if GW.ShopView then GW.ShopView.Hide() end
+    if GW.BuyView then GW.BuyView.Hide() end
   end)
   C_Timer.NewTicker(5, function()
     if panel:IsShown() then renderStatus() end
@@ -1993,13 +1676,14 @@ local function createPanel()
   GW.OnOptionsChanged(function()
     if not panel:IsShown() then return end
     renderStatus()
-    if GW.activeTab == "sell" then
+    if GW.activeTab == "buy" and GW.BuyView then
+      GW.BuyView.Refresh()
+    elseif GW.activeTab == "sell" then
       scanBags()
       renderBags()
       if state.sel then
-        renderMarket()
+        GW.MarketCard.Refresh()
         applyDefaultStrategy()
-        GW.SellCharts.Render(state.sel.packKey, state.sel.name)
       end
     end
   end)
@@ -2036,7 +1720,7 @@ end
 --- Opens the panel on a tab. Away from the auction house only Shopping opens (the window centred).
 ---@param key string "sell", "cancel", "shopping" or "scan"
 function GW.OpenTab(key)
-  if key ~= "shopping" and not ahOpen() then
+  if not ANYWHERE[key] and not ahOpen() then
     GW.Print(L["Open the auction house first."])
     return
   end
@@ -2076,13 +1760,16 @@ local lastPick
 ---@param bag number|nil
 ---@param slot number|nil
 local function pickFromBags(bag, slot)
-  if not (panel and panel:IsShown() and GW.activeTab == "sell" and bag and slot) then return end
+  if not (panel and panel:IsShown() and (GW.activeTab == "sell" or GW.activeTab == "buy") and bag and slot) then
+    return
+  end
   -- One click can reach two of the hooks below: act once.
   local key, now = bag .. ":" .. slot, GetTime()
   if lastPick and lastPick.key == key and lastPick.at == now then return end
   lastPick = { key = key, at = now }
   local info = C_Container.GetContainerItemInfo(bag, slot)
   if not (info and info.itemID) then return end
+  if GW.activeTab == "buy" then return GW.BuyView.LookUp(info.itemID, info.hyperlink) end -- #37
   local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
   if info.isBound or not (loc and loc:IsValid() and C_AuctionHouse.IsSellItemValid(loc, false)) then
     return toast(L["That item can't be sold at the auction house."], GW.SIGNAL_ORANGE)
@@ -2093,7 +1780,10 @@ local function pickFromBags(bag, slot)
   local want = rowKey(info.itemID, GW.LinkVariant(info.hyperlink))
   for pass = 1, 2 do
     for _, g in ipairs(state.bags) do
-      if g.key == want then return selectItem(g) end
+      if g.key == want then
+        scrollTo(g)
+        return selectItem(g)
+      end
     end
     if pass == 1 then -- the bags changed since the list was drawn
       scanBags()
@@ -2173,6 +1863,7 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
         anchorToAuctionHouse()
         updateTabs()
         if GW.ShopView then GW.ShopView.Refresh() end
+        if GW.activeTab == "buy" and GW.BuyView then GW.BuyView.AuctionHouseOpened() end
       end)
     elseif GW.Opt("autoShow") then
       C_Timer.After(0.2, function()
@@ -2192,7 +1883,7 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
     return
   end
   if not (panel and panel:IsShown()) then return end
-  if GW.activeTab ~= "sell" and event:find("SEARCH_RESULTS") then return end -- another tab's search
+  if event:find("SEARCH_RESULTS") then return end -- the market card's (MarketCard.lua)
 
   if event == "BAG_UPDATE_DELAYED" then
     local p = postInFlight()
@@ -2221,19 +1912,6 @@ ev:SetScript("OnEvent", function(_, event, arg1, arg2)
     end
   elseif event == "PLAYER_REGEN_DISABLED" then
     if state.pending then finishPending() end
-  elseif event:find("SEARCH_RESULTS") then
-    if not state.sel then return end
-    local argItem = type(arg1) == "table" and arg1.itemID or arg1
-    GW.Log("event %s (item %s)", event, tostring(argItem))
-    -- An item search for another suffix of the same item (Blizzard's Browse tab) isn't ours (#25).
-    -- Only when both name a suffix: a search for every suffix is sorted out row by row (GW.CollectSearchResults).
-    local theirs, ours = type(arg1) == "table" and arg1.itemSuffix or 0, state.key and state.key.itemSuffix or 0
-    local otherSuffix = theirs ~= 0 and ours ~= 0 and theirs ~= ours
-    if otherSuffix then
-      GW.Log("ignored %s: suffix %s, ours %s", event, tostring(arg1.itemSuffix), tostring(state.key.itemSuffix))
-    elseif argItem == nil or argItem == state.sel.itemID then
-      readResults(type(arg1) == "table" and arg1 or nil, event)
-    end
   elseif event == "AUCTION_HOUSE_SHOW_ERROR" or event == "AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED" then
     -- Diagnostics.lua records the error with the requests before it.
     if state.pending and event == "AUCTION_HOUSE_SHOW_ERROR" then

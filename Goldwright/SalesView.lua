@@ -385,7 +385,7 @@ mailEvents:SetScript("OnEvent", function()
     return
   end
   if not mailButton then
-    mailButton = UI.Button(MailFrame, L["Your sales"], 100, 22, function() GW.OpenSales() end)
+    mailButton = UI.Button(MailFrame, L["Your Sales"], 100, 22, function() GW.OpenSales() end)
     mailButton:SetPoint("TOPLEFT", MailFrame, "TOPRIGHT", 4, -30)
     UI.HoverTip(mailButton, "Goldwright")
   end

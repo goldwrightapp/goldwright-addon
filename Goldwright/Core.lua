@@ -939,7 +939,7 @@ function GW.PriceLine(msg)
 end
 
 local HELP =
-  "/gw status · /gw price [item] · /gw sell · /gw auctions · /gw sales · /gw scan · /gw lists · /gw watch · /gw gaps · /gw craft · /gw add [item] · /gw config · /gw minimap · /gw welcome · /gw bug"
+  "/gw status · /gw price [item] · /gw sell · /gw buy · /gw auctions · /gw sales · /gw scan · /gw lists · /gw watch · /gw gaps · /gw craft · /gw add [item] · /gw config · /gw minimap · /gw welcome · /gw bug"
 
 -- /gw and /goldwright. No command (or "status") prints the house and pack state; other commands
 -- open tabs and windows defined in later files, when they exist.
@@ -978,6 +978,8 @@ SlashCmdList.GOLDWRIGHT = function(raw)
     if GW.OpenSales then GW.OpenSales() end
   elseif cmd == "lists" or cmd == "shopping" then
     if GW.OpenTab then GW.OpenTab("shopping") end
+  elseif cmd == "buy" then -- the Buy tab, anywhere (#37)
+    if GW.OpenTab then GW.OpenTab("buy") end
   elseif cmd == "watch" then
     -- watched shopping lists against your newest data, anywhere (Shopping.lua)
     if GW.WatchedCount and GW.WatchedCount() == 0 then

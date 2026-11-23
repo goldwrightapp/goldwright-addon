@@ -318,7 +318,7 @@ local function create(parent)
   view.message:SetPoint("TOP", 0, -120)
   view.message:SetWidth(520)
 
-  view.replan = UI.Button(view, L["Re-plan with today's prices"], 200, 22, function()
+  view.replan = UI.Button(view, L["Re-plan with Today's Prices"], 200, 22, function()
     replan()
     render()
   end)
@@ -475,7 +475,7 @@ local function create(parent)
   view.unknown = fs(body, "GameFontDisableSmall", "LEFT")
   view.unknown:SetPoint("TOPLEFT", x, ty - 6 - 4 * 16 - 2)
   view.unknown:SetWidth(w)
-  view.shop = UI.Button(body, L["Make shopping list"], 160, 22, makeShoppingList)
+  view.shop = UI.Button(body, L["Make Shopping List"], 160, 22, makeShoppingList)
   view.shop:SetPoint("BOTTOMLEFT", body, "BOTTOMLEFT", x, 8)
 
   -- The bags change while levelling: the have / buy column follows; the skill moves the steps.

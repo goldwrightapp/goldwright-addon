@@ -40,6 +40,7 @@ local REQUESTS = {
   "PlaceBid",
   "StartCommoditiesPurchase",
   "ConfirmCommoditiesPurchase",
+  "CancelCommoditiesPurchase",
   "CancelAuction",
   "CancelSell",
 }

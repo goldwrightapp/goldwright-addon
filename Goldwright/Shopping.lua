@@ -9,10 +9,6 @@ local L = GW.L
 local ROWS, ROW_H = 10, 30 -- entry table: visible rows, row height
 local LIST_ROWS = 11 -- visible rows in the lists column
 local SEARCH_TIMEOUT = 6 -- seconds to wait for search results before giving up on an entry
-local BUY_TIMEOUT = 12 -- seconds to wait for the exact commodity price before cancelling
-local QUOTE_TIMEOUT = 60 -- seconds a quoted price waits for Confirm before it is let go
-local CONFIRM_TIMEOUT = 30 -- seconds after Confirm before saying the outcome is unknown
-local LATE_RESULT_WINDOW = 300 -- seconds a late purchase result still counts for that buy
 local UI = GW.UI
 local fs, setColor = UI.FontString, UI.SetColor
 local GREY, WHITE = UI.GREY, UI.WHITE
@@ -606,12 +602,17 @@ end
 ---@param color? number[] {r, g, b}
 local function toast(text, color) UI.Toast(view, text, color) end
 
---- Cancels a pending commodity purchase (if any) and forgets it. A purchase whose Confirm was
---- already clicked is on its way and is left alone: its result still arrives (onBuyEvent).
+--- Shopping's purchase going on, if any (GW.Purchase handles one at a time for every tab).
+---@return GoldwrightPurchase|nil p with `entry`, the list entry being bought
+local function myBuy()
+  local p = GW.Purchase.Current()
+  return p and p.entry and p or nil
+end
+
+--- Lets Shopping's unconfirmed purchase go (a confirmed one is on its way and is left alone).
 local function cancelBuy()
-  if sv.buy and sv.buy.confirming then return end
-  if sv.buy and C_AuctionHouse.CancelCommoditiesPurchase then pcall(C_AuctionHouse.CancelCommoditiesPurchase) end
-  sv.buy = nil
+  local b = myBuy()
+  if b then GW.Purchase.Cancel(b) end
 end
 
 --- Saves a Want typed into a list row (blank or 0 clears it). The buy plan depends on Want, so a
@@ -624,8 +625,9 @@ local function setWant(e, text)
   n = n and n >= 1 and math.floor(n) or nil
   if n == e.want then return end
   e.want = n
-  if sv.buy and sv.buy.entry == e then
-    if sv.buy.confirming then return end
+  local b = myBuy()
+  if b and b.entry == e then
+    if b.confirming then return end
     cancelBuy()
   end
   if sv.results[e] then GW.CheckEntry(e) end
@@ -639,124 +641,16 @@ local function tellBuy(text, color)
   if not (view and view:IsShown()) then GW.Print("%s", text) end
 end
 
---- Gives up waiting for the result of a confirmed buy: the purchase may or may not have gone
---- through, so the row stops offering it until the list is checked again, and a late result still
---- counts (sv.unanswered).
----@param b GoldwrightShoppingBuy
----@param why string reason for the debug log (English)
----@param message string the player's message, a translated format string with the quantity and item name
-local function buyUnanswered(b, why, message)
-  if sv.buy == b then sv.buy = nil end
-  b.unansweredAt = GetTime()
-  sv.unanswered = b
-  sv.results[b.entry] = nil
-  GW.Log("shopping confirm unanswered: %d x %s (%s)", b.qty, b.entry.name, why)
-  tellBuy(string.format(message, b.qty, b.entry.name), GW.SIGNAL_ORANGE)
-  if render then render() end
-end
-
---- The Buy / Confirm button of a commodity row. First click asks the auction house for the exact
---- price of the planned units (cancelled after BUY_TIMEOUT without an answer); a second click, once
---- the price is known, confirms the purchase. Refused in combat.
----@param e GoldwrightShoppingEntry
-local function buyClick(e)
-  local res = sv.results[e]
-  local b = sv.buy
-  if InCombatLockdown and InCombatLockdown() then return toast(L["Not in combat."], GW.SIGNAL_ORANGE) end
-  if b and b.confirming then return end -- already buying: never confirm twice
-  if b and b.entry == e and b.total then
-    if GetTime() - (b.quotedAt or 0) < GW.CONFIRM_DELAY then return end -- a double click on Buy
-    -- second click: confirm at the quoted price
-    b.confirming = true
-    C_AuctionHouse.ConfirmCommoditiesPurchase(e.itemID, b.qty)
-    GW.Log("shopping confirm: %d x %s for %d", b.qty, e.name, b.total)
-    toast(L["Buying…"], GREY)
-    if render then render() end
-    C_Timer.After(CONFIRM_TIMEOUT, function()
-      if sv.buy == b and not b.done then
-        buyUnanswered(
-          b,
-          "No answer from the auction house",
-          L["No answer from the auction house about %d × %s. It may have been bought: check your mailbox before buying again."]
-        )
-      end
-    end)
-    return
-  end
-  if not (res and res.kind == "commodity" and res.plan.units > 0) then return end
-  entryName(e)
-  cancelBuy()
-  local qty = res.plan.units
-  sv.buy = { entry = e, qty = qty, estimate = res.plan.total, at = GetTime() }
-  sv.unanswered = nil
-  local token = sv.buy
-  C_AuctionHouse.StartCommoditiesPurchase(e.itemID, qty)
-  GW.Log("shopping buy start: %d x %s (estimate %d)", qty, e.name, res.plan.total)
-  toast(L["Asking the auction house for the exact price…"], GREY)
-  if render then render() end
-  -- Only a buy that never got a price is cancelled here; a quoted one has its own wait
-  -- (onBuyEvent) and a confirmed one is never cancelled.
-  C_Timer.After(BUY_TIMEOUT, function()
-    if sv.buy == token and not token.done and not token.total and not token.confirming then
-      cancelBuy()
-      toast(L["No answer from the auction house. Nothing was bought."], GW.SIGNAL_ORANGE)
-      if render then render() end
-    end
-  end)
-end
-
---- The Show button of a gear row: sends a browse search so Blizzard's Buy list shows the item.
----@param e GoldwrightShoppingEntry
-local function showInBuyTab(e)
-  if not GW.CanSearch() then return toast(L["Waiting for a search slot: try again in a moment."], GW.SIGNAL_ORANGE) end
-  GW.NoteSearch()
-  C_AuctionHouse.SendBrowseQuery({ searchString = e.name, sorts = sorts(), filters = {}, itemClassFilters = {} })
-  toast(L["Shown in Blizzard's list on the left: buy it there."], GREY)
-end
-
---- Handles the commodity purchase events for the pending buy: the exact price (with warnings when it
---- is over the max or more gold than the player has), price gone, success (re-checks the entry) or
---- failure.
----@param event string COMMODITY_PRICE_* or COMMODITY_PURCHASE_*
----@param a1 any unit price (COMMODITY_PRICE_UPDATED)
----@param a2 any total price (COMMODITY_PRICE_UPDATED)
-local function onBuyEvent(event, a1, a2)
-  local b = sv.buy
-  local late = false
-  -- Blizzard's own Buy tab fires the same events, so only a result soon after counts as ours.
-  if sv.unanswered and GetTime() - (sv.unanswered.unansweredAt or 0) > LATE_RESULT_WINDOW then sv.unanswered = nil end
-  if not b and event:find("^COMMODITY_PURCHASE") and sv.unanswered then
-    b, late = sv.unanswered, true -- the result of a buy we stopped waiting for
-  end
-  if not b then return end
+--- What Shopping says about its purchase (GW.Purchase's onChange): the exact price, with warnings
+--- when it is over the max, more gold than the player has or more than the list showed; the result;
+--- and what to do when the answer didn't come.
+---@param b GoldwrightPurchase
+---@param what string
+---@param reason? string
+local function onBuyChange(b, what, reason)
   local e = b.entry
-  if late then
-    sv.unanswered = nil
-    if event == "COMMODITY_PURCHASE_SUCCEEDED" then
-      sv.bought[e] = (sv.bought[e] or 0) + b.qty
-      tellBuy(string.format(L["It went through after all: bought %d × %s."], b.qty, e.name), GW.SIGNAL_BLUE)
-    else
-      tellBuy(string.format(L["The purchase of %d × %s failed. Nothing was bought."], b.qty, e.name), GW.SIGNAL_ORANGE)
-    end
-    if render then render() end
-    return
-  end
-  if event == "COMMODITY_PRICE_UPDATED" then
-    b.unit, b.total = a1, a2
-    b.quotedAt = GetTime()
+  if what == "quote" then
     entryName(e)
-    C_Timer.After(GW.CONFIRM_DELAY + 0.05, function()
-      if render then render() end
-    end)
-    local quote = {}
-    b.quote = quote
-    C_Timer.After(QUOTE_TIMEOUT, function()
-      if sv.buy == b and b.quote == quote and not b.confirming and not b.done then
-        cancelBuy()
-        toast(L["The price wasn't confirmed in time. Nothing was bought: click Buy again."], GREY)
-        if render then render() end
-      end
-    end)
     local max = GW.EntryMax(e)
     if max and b.unit and b.unit > max then
       toast(
@@ -793,24 +687,90 @@ local function onBuyEvent(event, a1, a2)
         WHITE
       )
     end
-  elseif event == "COMMODITY_PRICE_UNAVAILABLE" then
-    sv.buy = nil
+  elseif what == "noPrice" then
+    toast(L["No answer from the auction house. Nothing was bought."], GW.SIGNAL_ORANGE)
+  elseif what == "expired" then
+    toast(L["The price wasn't confirmed in time. Nothing was bought: click Buy again."], GREY)
+  elseif what == "unavailable" then
     toast(L["Those listings are gone. Run the list again."], GW.SIGNAL_ORANGE)
-  elseif event == "COMMODITY_PURCHASE_SUCCEEDED" then
-    b.done = true
+  elseif what == "bought" then
     sv.bought[e] = (sv.bought[e] or 0) + b.qty
     tellBuy(string.format(L["Bought %d × %s for %s."], b.qty, e.name, GW.Money(b.total or b.estimate)), GW.SIGNAL_BLUE)
-    sv.buy = nil
     sv.results[e] = nil
     -- see what's left (only while the tab is open; otherwise the next run checks it)
     C_Timer.After(0.5, function()
       if view and view:IsShown() then GW.CheckEntry(e) end
     end)
-  elseif event == "COMMODITY_PURCHASE_FAILED" then
-    sv.buy = nil
+  elseif what == "failed" then
     tellBuy(L["The purchase failed. Nothing was bought."], GW.SIGNAL_ORANGE)
+  elseif what == "unanswered" then
+    -- it may have gone through: the row stops offering it until the list is checked again
+    sv.results[e] = nil
+    -- the auction house closed: the window goes with it, so this one is always said in chat
+    if reason == "closed" then
+      GW.Print(
+        L["The auction house closed before it answered about %d × %s. It may have been bought: check your mailbox before buying again."],
+        b.qty,
+        e.name
+      )
+      if render then render() end
+      return
+    end
+    tellBuy(
+      string.format(
+        L["No answer from the auction house about %d × %s. It may have been bought: check your mailbox before buying again."],
+        b.qty,
+        e.name
+      ),
+      GW.SIGNAL_ORANGE
+    )
+  elseif what == "lateBought" then
+    sv.bought[e] = (sv.bought[e] or 0) + b.qty
+    tellBuy(string.format(L["It went through after all: bought %d × %s."], b.qty, e.name), GW.SIGNAL_BLUE)
+  elseif what == "lateFailed" then
+    tellBuy(string.format(L["The purchase of %d × %s failed. Nothing was bought."], b.qty, e.name), GW.SIGNAL_ORANGE)
   end
   if render then render() end
+end
+
+--- The Buy / Confirm button of a commodity row. First click asks the auction house for the exact
+--- price of the planned units; a second click, once the price is known, confirms the purchase
+--- (GW.Purchase). Refused in combat.
+---@param e GoldwrightShoppingEntry
+local function buyClick(e)
+  local res = sv.results[e]
+  local b = myBuy()
+  if InCombatLockdown and InCombatLockdown() then return toast(L["Not in combat."], GW.SIGNAL_ORANGE) end
+  if b and b.confirming then return end -- already buying: never confirm twice
+  if b and b.entry == e and b.total then
+    -- second click: confirm at the quoted price (not within the pause after the quote)
+    if not GW.Purchase.Confirm(b) then return end
+    toast(L["Buying…"], GREY)
+    if render then render() end
+    return
+  end
+  if not (res and res.kind == "commodity" and res.plan.units > 0) then return end
+  entryName(e)
+  local p = GW.Purchase.Start({
+    itemID = e.itemID,
+    name = e.name,
+    qty = res.plan.units,
+    estimate = res.plan.total,
+    entry = e,
+    onChange = onBuyChange,
+  })
+  if not p then return end
+  toast(L["Asking the auction house for the exact price…"], GREY)
+  if render then render() end
+end
+
+--- The Show button of a gear row: sends a browse search so Blizzard's Buy list shows the item.
+---@param e GoldwrightShoppingEntry
+local function showInBuyTab(e)
+  if not GW.CanSearch() then return toast(L["Waiting for a search slot: try again in a moment."], GW.SIGNAL_ORANGE) end
+  GW.NoteSearch()
+  C_AuctionHouse.SendBrowseQuery({ searchString = e.name, sorts = sorts(), filters = {}, itemClassFilters = {} })
+  toast(L["Shown in Blizzard's list on the left: buy it there."], GREY)
 end
 
 ---------------------------------------------------------------------------
@@ -1102,7 +1062,7 @@ local function renderLists()
     end
     p.meta:SetText(#lists > 0 and table.concat(parts, " · ") or "")
   end
-  p.check:SetText(sv.running and sv.watchRun and L["Stop"] or L["Check watched lists"])
+  p.check:SetText(sv.running and sv.watchRun and L["Stop"] or L["Check Watched Lists"])
   p.empty:SetShown(#lists == 0)
   p.hint:SetText(
     (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) and L["Click a list to open it. The spyglass watches its prices."]
@@ -1154,13 +1114,13 @@ local function renderList(list)
       row.found:SetText(text)
       setColor(row.found, color)
       local r = sv.results[e]
-      local b = sv.buy
+      local b = myBuy()
       if b and b.entry == e then
         row.action:Show()
         row.action:SetText(
           b.confirming and L["Buying…"]
             or b.total and string.format(L["Confirm · %s"], GW.Money(b.total))
-            or L["Getting price…"]
+            or L["Getting Price…"]
         )
         row.action:SetEnabled(
           atAH and b.total ~= nil and not b.confirming and GetTime() - (b.quotedAt or 0) >= GW.CONFIRM_DELAY or false
@@ -1168,7 +1128,7 @@ local function renderList(list)
       elseif r and r.kind == "commodity" and r.plan.units > 0 and e.want then
         row.action:Show()
         row.action:SetText(string.format(L["Buy %d · %s"], r.plan.units, GW.Money(r.plan.total)))
-        row.action:SetEnabled(atAH and sv.buy == nil or false)
+        row.action:SetEnabled(atAH and GW.Purchase.Current() == nil or false)
       elseif r and r.kind == "commodity" and r.plan.available > 0 then
         row.action:Show()
         row.action:SetText(L["Set Want to Buy"])
@@ -1279,16 +1239,41 @@ local function copyList(l)
   return c
 end
 
---- SHOP-7: adds an item to the selected list (or to a new "Shopping" list when there is none).
---- Refuses an item already in the list (same id or same name).
+--- Whether a list has an item already (same id or same name): an item is on a list once, on as
+--- many lists as you like.
+---@param list GoldwrightShoppingList
+---@param itemID number|nil
+---@param name string
+---@return boolean
+function GW.ListHas(list, itemID, name)
+  for _, x in ipairs(list.entries) do
+    if (itemID and x.itemID == itemID) or x.name:lower() == name:lower() then return true end
+  end
+  return false
+end
+
+--- Asks for a new list's name and makes the list (empty).
+---@param apply fun(list: GoldwrightShoppingList) called with the new list
+function GW.AskNewList(apply)
+  askName(L["Name the new shopping list:"], "", function(name)
+    local lists = GW.Lists()
+    local list = { name = name, entries = {} }
+    lists[#lists + 1] = list
+    apply(list)
+  end)
+end
+
+--- SHOP-7: adds an item to a list: the one given, else the selected list (or a new "Shopping" list
+--- when there is none). Refuses an item already in that list (same id or same name).
 ---@param itemText? string see GW.MakeEntry
 ---@param maxText? string
 ---@param wantText? string
+---@param list? GoldwrightShoppingList
 ---@return GoldwrightShoppingEntry|nil entry
 ---@return GoldwrightShoppingList|string list the list it went into, or an error message
-function GW.AddToList(itemText, maxText, wantText)
+function GW.AddToList(itemText, maxText, wantText, list)
   local lists = GW.Lists()
-  local list = selectedList()
+  list = list or selectedList()
   if not list then
     list = { name = L["Shopping"], entries = {} }
     lists[#lists + 1] = list
@@ -1296,11 +1281,7 @@ function GW.AddToList(itemText, maxText, wantText)
   end
   local e, err = GW.MakeEntry(itemText, maxText, wantText)
   if not e then return nil, err end
-  for _, x in ipairs(list.entries) do
-    if (e.itemID and x.itemID == e.itemID) or x.name:lower() == e.name:lower() then
-      return nil, string.format(L["%s is already in %s."], e.name, list.name)
-    end
-  end
+  if GW.ListHas(list, e.itemID, e.name) then return nil, string.format(L["%s is already in %s."], e.name, list.name) end
   list.entries[#list.entries + 1] = e
   if render then render() end
   return e, list
@@ -1471,7 +1452,7 @@ local function buildListsPage(p)
     end)
   end)
   newList:SetPoint("TOPRIGHT", -12, -5)
-  p.check = lbtn(L["Check watched lists"], 150, false, function() GW.CheckWatched() end)
+  p.check = lbtn(L["Check Watched Lists"], 150, false, function() GW.CheckWatched() end)
   p.check:SetPoint("RIGHT", newList, "LEFT", -6, 0)
   UI.HoverTip(
     p.check,
@@ -1480,7 +1461,7 @@ local function buildListsPage(p)
   lbtn(L["Import"], 100, true, function() showIO("import") end):SetPoint("BOTTOMLEFT", 14, 10)
   lbtn(L["Export"], 100, false, function() showIO("export") end):SetPoint("BOTTOMLEFT", 120, 10)
   -- Items worth carrying to or from Blackwater, to add to a list (GapsView.lua).
-  lbtn(L["Blackwater gaps"], 140, true, function()
+  lbtn(L["Blackwater Gaps"], 140, true, function()
     if GW.OpenGaps then GW.OpenGaps() end
   end):SetPoint("BOTTOMLEFT", 226, 10)
   p.hint = fs(p, "GameFontDisableSmall", "LEFT")
@@ -1870,7 +1851,8 @@ local function buildListPage(p)
     row.action:SetScript("OnClick", function()
       local e, r = row.e, row.e and sv.results[row.e]
       if not e then return end
-      if (sv.buy and sv.buy.entry == e) or (r and r.kind == "commodity") then
+      local b = myBuy()
+      if (b and b.entry == e) or (r and r.kind == "commodity") then
         buyClick(e)
       else
         showInBuyTab(e)
@@ -1887,7 +1869,8 @@ local function buildListPage(p)
           break
         end
       end
-      if sv.buy and sv.buy.entry == row.e then cancelBuy() end
+      local b = myBuy()
+      if b and b.entry == row.e then cancelBuy() end
       render()
     end)
     view.rows[i] = row
@@ -1997,36 +1980,18 @@ for _, e in ipairs({
   "ITEM_SEARCH_RESULTS_UPDATED",
   "ITEM_SEARCH_RESULTS_ADDED",
   "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED",
-  "COMMODITY_PRICE_UPDATED",
-  "COMMODITY_PRICE_UNAVAILABLE",
-  "COMMODITY_PURCHASE_SUCCEEDED",
-  "COMMODITY_PURCHASE_FAILED",
   "AUCTION_HOUSE_CLOSED",
 }) do
   pcall(events.RegisterEvent, events, e)
 end
-events:SetScript("OnEvent", function(_, event, a1, a2)
+events:SetScript("OnEvent", function(_, event, a1)
   if event == "AUCTION_HOUSE_CLOSED" then
-    local b = sv.buy
-    if b and b.confirming and not b.done then
-      buyUnanswered(
-        b,
-        "The auction house closed before it answered",
-        L["The auction house closed before it answered about %d × %s. It may have been bought: check your mailbox before buying again."]
-      )
-    end
-    sv.buy = nil
-    GW.StopList()
+    GW.StopList() -- a purchase on its way is Purchase.lua's to report
     return
   end
-  -- A confirmed buy's result counts even with the tab closed (it was the player's click).
-  local buyResult = event:find("^COMMODITY_PURCHASE")
-    and ((sv.buy and sv.buy.confirming) or (not sv.buy and sv.unanswered))
-  if not buyResult and not (view and view:IsShown()) then return end
+  if not (view and view:IsShown()) then return end
   if event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" then
     onBrowseResults()
-  elseif event:find("^COMMODITY_P") then
-    onBuyEvent(event, a1, a2)
   else
     onSearchResults(event, a1)
   end

@@ -87,7 +87,7 @@ local function render()
 end
 
 local function create()
-  window = UI.Window("GoldwrightGapsFrame", W, H, { title = "Goldwright · " .. L["Blackwater gaps"], movable = true })
+  window = UI.Window("GoldwrightGapsFrame", W, H, { title = "Goldwright · " .. L["Blackwater Gaps"], movable = true })
   window:SetPoint("CENTER")
 
   window.toN = UI.TabButton(window, "", 260, 22, function()

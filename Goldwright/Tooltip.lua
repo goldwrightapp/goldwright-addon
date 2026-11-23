@@ -487,6 +487,9 @@ end
 local function addTooltipLines(tt, link, itemID, tipData, product)
   local m = itemModel(link, itemID)
   if not m then return end
+  -- the Buy lookup suggests items by the names Goldwright has seen (#37)
+  local seenName = link and not product and link:match("%[(.-)%]")
+  if seenName and GW.ItemNames and (GW.LinkVariant(link) or "") == "" then GW.ItemNames.Note(itemID, seenName) end
   local h = GW.House()
   -- soulbound and other items that can't be sold at the auction house: the vendor line only
   if notTradeable(tt, tipData, m, product) then

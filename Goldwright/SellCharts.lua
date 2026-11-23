@@ -331,7 +331,9 @@ local function otherHouses(itemID)
   for _, s in ipairs({ "A", "H", "N" }) do
     if s ~= side() and GW.ShowHouse(s, side()) then
       local there = d[s]
-      parts[#parts + 1] = (there and there.mv) and string.format("%s %s", GW.HOUSE_NAMES[s], GW.Money(there.mv))
+      -- the lowest price there, like the tooltip and the Buy tab's Other houses (one number per house)
+      parts[#parts + 1] = (there and there.mv)
+          and string.format("%s %s", GW.HOUSE_NAMES[s], GW.Money(there.min or there.mv))
         or string.format(L["%s none listed"], GW.HOUSE_NAMES[s])
     end
   end

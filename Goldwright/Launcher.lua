@@ -103,7 +103,7 @@ local function createPopup()
     -- away from the auction house the window opens on your shopping lists
     GW.OpenTab(GW.AuctionHouseOpen and GW.AuctionHouseOpen() and "sell" or "shopping")
   end)
-  linkButton(L["Your sales"], -138, function()
+  linkButton(L["Your Sales"], -138, function()
     popup:Hide()
     GW.OpenSales()
   end)

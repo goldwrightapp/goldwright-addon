@@ -132,7 +132,7 @@ local function create()
     row.price:SetPoint("RIGHT", -100, 0)
     row.max = fs(row, "GameFontDisableSmall", "RIGHT")
     row.max:SetPoint("RIGHT", -6, 0)
-    row.open = UI.Button(row, L["Open list"], 100, 20, function()
+    row.open = UI.Button(row, L["Open List"], 100, 20, function()
       local line = row.line
       if not (line and line.kind == "list") then return end
       if GW.OpenTab then GW.OpenTab("shopping") end

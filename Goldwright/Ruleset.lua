@@ -13,13 +13,16 @@
 local _, GW = ...
 local L = GW.L
 
---- This character's key for its saved popup answer: "US/Bomo".
----@param region string
+--- This character's key for what Goldwright remembers per character (the ruleset popup's answer,
+--- the Buy tab's recent lookups): "US/Bomo".
+---@param region? string (default: the player's)
 ---@return string|nil
-local function charKey(region)
+function GW.CharKey(region)
   local name = UnitName and UnitName("player")
+  region = region or (GW.House and GW.House().region) or "US"
   return name and name ~= "" and (region .. "/" .. name) or nil
 end
+local charKey = GW.CharKey
 
 --- The ruleset from the game's rules (C_GameRules). Neither PvP nor RP active is Normal. nil when
 --- the rules aren't there, or on Hardcore (Goldwright has no Hardcore data yet).
