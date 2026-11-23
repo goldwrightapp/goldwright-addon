@@ -76,7 +76,7 @@ end
 -- looking an item up
 ---------------------------------------------------------------------------
 --- This character's recent lookups, newest first (item ids): each character shops for its own
---- things (GoldwrightDB.buyRecent["US/Bomo"]).
+--- things (GoldwrightDB.buyRecent["US/Name"]).
 ---@return number[]
 local function recent()
   local key = GW.CharKey() or "?"

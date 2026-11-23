@@ -40,7 +40,9 @@ local function note(text, x)
   f:SetPoint("TOPLEFT", x or 40, Y + 4)
   f:SetWidth(560)
   f:SetText(text)
-  Y = Y - (f:GetStringHeight() > 14 and 30 or 18)
+  -- one line 18, two lines 30; a third (longer languages) makes room instead of running into the next setting
+  local h = f:GetStringHeight()
+  Y = Y - (h > 26 and math.ceil(h) + 8 or h > 14 and 30 or 18)
   return f
 end
 
@@ -232,6 +234,15 @@ local function build()
     L["Sell rate and price trend"],
     "ttTrend",
     L["How fast it sells (proven sales, else an estimate) and how the average price moved this week."]
+  )
+  choice(
+    L["Stack prices"],
+    "ttStack",
+    { { "stack", L["Whole Stack"] }, { "one", L["One Item"] }, { "both", L["Both"] } }
+  )
+  note(
+    L["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."],
+    20
   )
   check(L["Vendor comparison"], "ttVendor")
   check(

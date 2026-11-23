@@ -824,4 +824,10 @@ GW.Translate("esES", {
   ["Total"] = "Total",
   ["Under Normal"] = "Bajo lo normal",
   ["Under Normal: %s"] = "Bajo lo normal: %s",
+  ["Stack prices"] = "Precios de montón",
+  ["Whole Stack"] = "Montón Entero",
+  ["One Item"] = "Una Unidad",
+  ["Both"] = "Ambos",
+  ["Stack"] = "Montón",
+  ["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."] = "Montón Entero: muestra el precio del montón entero (mantén Shift para ver el precio de una unidad). Una Unidad: muestra el precio de una unidad (mantén Shift para ver el del montón). Ambos: muestra los dos precios.",
 })

@@ -824,4 +824,10 @@ GW.Translate("zhCN", {
   ["Total"] = "合计",
   ["Under Normal"] = "低于平时",
   ["Under Normal: %s"] = "低于平时：%s",
+  ["Stack prices"] = "堆叠价格",
+  ["Whole Stack"] = "整组",
+  ["One Item"] = "单个",
+  ["Both"] = "两者",
+  ["Stack"] = "整组",
+  ["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."] = "整组：显示整组的价格（按住Shift查看单个价格）。单个：显示单个的价格（按住Shift查看整组价格）。两者：同时显示两个价格。",
 })

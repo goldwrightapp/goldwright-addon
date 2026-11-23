@@ -824,4 +824,10 @@ GW.Translate("ruRU", {
   ["Total"] = "Итого",
   ["Under Normal"] = "Ниже обычного",
   ["Under Normal: %s"] = "Ниже обычного: %s",
+  ["Stack prices"] = "Цены стопок",
+  ["Whole Stack"] = "Вся Стопка",
+  ["One Item"] = "Одна Штука",
+  ["Both"] = "Оба",
+  ["Stack"] = "Стопка",
+  ["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."] = "Вся Стопка: цена всей стопки (удерживайте Shift, чтобы увидеть цену одной штуки). Одна Штука: цена одной штуки (удерживайте Shift, чтобы увидеть цену стопки). Оба: обе цены.",
 })

@@ -824,4 +824,10 @@ GW.Translate("deDE", {
   ["Total"] = "Gesamt",
   ["Under Normal"] = "Unter normal",
   ["Under Normal: %s"] = "Unter normal: %s",
+  ["Stack prices"] = "Stapelpreise",
+  ["Whole Stack"] = "Ganzer Stapel",
+  ["One Item"] = "Ein Stück",
+  ["Both"] = "Beides",
+  ["Stack"] = "Stapel",
+  ["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."] = "Ganzer Stapel: zeigt den Preis des ganzen Stapels (Shift halten für den Preis eines Stücks). Ein Stück: zeigt den Preis eines Stücks (Shift halten für den Stapelpreis). Beides: zeigt beide Preise.",
 })

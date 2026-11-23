@@ -14,7 +14,7 @@ local _, GW = ...
 local L = GW.L
 
 --- This character's key for what Goldwright remembers per character (the ruleset popup's answer,
---- the Buy tab's recent lookups): "US/Bomo".
+--- the Buy tab's recent lookups): "US/Name".
 ---@param region? string (default: the player's)
 ---@return string|nil
 function GW.CharKey(region)

@@ -824,4 +824,10 @@ GW.Translate("koKR", {
   ["Total"] = "합계",
   ["Under Normal"] = "평소 이하",
   ["Under Normal: %s"] = "평소 이하: %s",
+  ["Stack prices"] = "묶음 가격",
+  ["Whole Stack"] = "묶음 전체",
+  ["One Item"] = "1개",
+  ["Both"] = "둘 다",
+  ["Stack"] = "묶음",
+  ["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."] = "묶음 전체: 묶음 전체의 가격을 표시합니다 (Shift를 누르면 1개 가격). 1개: 1개의 가격을 표시합니다 (Shift를 누르면 묶음 가격). 둘 다: 두 가격을 모두 표시합니다.",
 })

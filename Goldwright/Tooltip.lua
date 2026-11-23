@@ -308,9 +308,14 @@ end
 local function tradeableLines(tt, m, h, expanded, n)
   local O = GW.Opt
   n = n or 1
-  -- A stack in your bags is priced as a whole: every price line is for all n, and the heading says
-  -- "×n"; Shift adds one item's price (goldwright-addon #30).
-  local function stack(copper) return money(copper * n) end
+  -- A stack in your bags (#30, #44), by the Stack prices setting: "stack" prices every line for all
+  -- n with "×n" in the heading, and the expand key adds one item's price; "one" prices one item,
+  -- and the expand key adds the stack's; "both" prices one item with the stack's min price on the
+  -- next line, so the expand key adds neither.
+  local mode = n > 1 and O("ttStack") or "one"
+  local per = mode == "stack" and n or 1
+  local function stack(copper) return money(copper * per) end
+  local stackLabel = "  " .. L["Stack"] .. " ×" .. GW.Number(n)
   local data = m.data
   local here = data and data[h.side]
   local listed = here and here.mv
@@ -334,7 +339,8 @@ local function tradeableLines(tt, m, h, expanded, n)
   if not O("ttNow") then
     addLine(tt, title(m))
   elseif listed then
-    addPair(tt, title(m, n > 1 and (L["Min price"] .. " ×" .. GW.Number(n)) or L["Min price"]), stack(here.min))
+    addPair(tt, title(m, per > 1 and (L["Min price"] .. " ×" .. GW.Number(n)) or L["Min price"]), stack(here.min))
+    if mode == "both" then addPair(tt, stackLabel, money(here.min * n)) end
   else
     addPair(tt, title(m, L["Min price"]), L["none listed"], GREY)
   end
@@ -385,8 +391,14 @@ local function tradeableLines(tt, m, h, expanded, n)
       if here.avg7 and avgShown ~= "avg7" then addPair(tt, "  " .. L["Avg price (7 days)"], stack(here.avg7)) end
       if here.avg30 and avgShown ~= "avg30" then addPair(tt, "  " .. L["Avg price (30 days)"], stack(here.avg30)) end
     end
-    -- a stack: what one of them goes for
-    if n > 1 and listed and O("ttNow") then addPair(tt, "  " .. L["One item"], money(here.min)) end
+    -- a stack: the min price the compact lines don't show (one item, or the whole stack)
+    if n > 1 and listed and O("ttNow") then
+      if mode == "stack" then
+        addPair(tt, "  " .. L["One item"], money(here.min))
+      elseif mode == "one" then
+        addPair(tt, stackLabel, money(here.min * n))
+      end
+    end
     if listed and O("ttNow") and here.baitUnits > 0 then
       addLine(
         tt,

@@ -1,20 +1,18 @@
 --- The Sell tab's chart (SELL-15 price history, SELL-16 best time to post): one wide plot area in
---- the market card, a History / Best time to post switch above it. Each chart is an object of its
---- own (GoldwrightChart) drawn into the same place; only the chosen one shows. Line objects draw
---- price lines (bars or dots where CreateLine is missing), textures draw bars and reference lines.
---- Drawn once per selected item (or switch / settings change) from pooled objects: no OnUpdate, no
---- work while idle. The numbers come from Selling.lua (GW.HistoryWindow, ...), tested without the UI.
+--- the market card (Sell and Buy tabs), a History / Best time to post switch above it, and the Market
+--- window (#16) a click on a day opens. Every chart is a GW.Chart (Chart.lua: lines, day dots, bars,
+--- hover); only the chosen one of the two shows in the card. Drawn once per selected item (or switch
+--- / settings change): no OnUpdate, no work while idle. The numbers come from Selling.lua
+--- (GW.HistoryWindow, ...), tested without the UI.
 ---
---- Each drawing keeps what it drew in plot coordinates (chart.marks: the days or hours with data).
---- Hovering a chart (#13) snaps a thin line to the nearest of those and shows its exact values in
---- the game tooltip; with a controller, A on the chart then left / right does the same. The hover
---- runs only while the mouse is over a chart. A click on a day opens the Market window (#16), whose
---- four tabs reuse the same chart pieces.
+--- Each drawing keeps what it drew in plot coordinates (chart.marks: the days or hours with data),
+--- for the hover (#13): a thin line snaps to the nearest one and the game tooltip shows its values.
 local _, GW = ...
 local L = GW.L
+local Chart = GW.Chart
+local rect, dashed, range = Chart.Rect, Chart.Dashed, Chart.Range
 
-local LABEL_PAD = 13 -- room for the small labels inside the plot
-local DASH, DASH_GAP = 4, 4 -- the dashed reference line
+local LABEL_PAD = Chart.LABEL_PAD
 -- "Nov 9" by month, so each language can put the day first ("9. Nov.").
 local MONTH_DAY = {
   L["Jan %d"],
@@ -38,26 +36,15 @@ function GW.DateLabel(t) return string.format(MONTH_DAY[tonumber(date("%m", t))]
 
 local UI = GW.UI
 
---- One chart: its frames and the pools of lines and textures it draws with.
----@class GoldwrightChart
----@field key string "history", "hours" or "market"
----@field w number plot width
----@field h number plot height
----@field lines table[] pooled Line objects
----@field texs table[] pooled textures
----@field nLines number lines used in the current drawing
----@field nTexs number textures used in the current drawing
----@field plot table plot frame
----@field msg table message shown instead of the plot
----@field below table legend under the x labels
----@field ready boolean the last drawing had something to show
----@field useLines boolean the client can create Line objects
----@field extras table[] frames outside the plot shown and hidden with it
+--- A chart of the Sell tab or the Market window: a GW.Chart with its labels.
+---@class GoldwrightSellChart: GoldwrightChart
 ---@field days number|nil history: days shown (7 or 30)
----@field hi table|nil history: top price label
----@field lo table|nil history: bottom price label
----@field xFirst table|nil history: first day label
----@field xLast table|nil history: last day label
+---@field hi table|nil top value label
+---@field lo table|nil bottom value label
+---@field xFirst table|nil first day (or hour) label
+---@field xMid table|nil market: middle label
+---@field xLast table|nil last day label
+---@field note table|nil market: the quiet line under the key
 ---@field houses table|nil history: the other houses' prices, right of the legend
 ---@field toggles table[]|nil history: the 7d / 30d buttons
 ---@field points { x: number, y: number?, day: number, price: number? }[]|nil history: drawn points
@@ -65,19 +52,13 @@ local UI = GW.UI
 ---@field price table|nil hours: price range label
 ---@field bars { x: number, w: number, hour: number, units: number, price: number? }[]|nil hours: drawn bars
 ---@field window GoldwrightPostWindow|nil hours: the window drawn last (for tests)
----@field marks table[]|nil the days or hours that can be inspected, left to right
----@field at number|nil index into marks of the one inspected now
 ---@field ref number|nil history: the dashed line's price
 ---@field refLabel string|nil history: its name in the tooltip
----@field hit table|nil the frame over the plot that takes the mouse
----@field cross table|nil the thin line on the inspected day or hour
----@field mark table|nil the dot on the inspected price
----@field lit table|nil the light column behind the inspected hour
 
 --- The Sell tab chart (GW.SellCharts).
 ---@class GoldwrightSellCharts
----@field history GoldwrightChart|nil
----@field hours GoldwrightChart|nil
+---@field history GoldwrightSellChart|nil
+---@field hours GoldwrightSellChart|nil
 ---@field view string "history" or "hours": the chart shown
 ---@field caption table|nil the caption naming the chart shown
 ---@field switch table[]|nil the History / Best time to post buttons
@@ -127,167 +108,6 @@ local function dayLabel(epoch)
   return string.format(MONTH_DAY[t.month], t.day)
 end
 
----------------------------------------------------------------------------
--- drawing primitives (pooled)
----------------------------------------------------------------------------
-
---- Creates a chart at the box's plot area: plot frame with background and base line, message and
---- legend.
----@param parent table the market card
----@param key string "history" or "hours"
----@param box { x: number, y: number, w: number, h: number } the plot area in `parent`
----@return GoldwrightChart
-local function newChart(parent, key, box)
-  local T = UI.Tokens()
-  local c = { key = key, w = box.w, h = box.h, lines = {}, texs = {}, nLines = 0, nTexs = 0, extras = {} }
-  c.plot = CreateFrame("Frame", nil, parent)
-  c.plot:SetPoint("TOPLEFT", box.x, box.y)
-  c.plot:SetSize(box.w, box.h)
-  local bg = c.plot:CreateTexture(nil, "BACKGROUND")
-  bg:SetAllPoints()
-  bg:SetColorTexture(T.chartBg[1], T.chartBg[2], T.chartBg[3], T.chartBg[4] or 1)
-  local base = c.plot:CreateTexture(nil, "BORDER")
-  base:SetPoint("BOTTOMLEFT")
-  base:SetPoint("BOTTOMRIGHT")
-  base:SetHeight(1)
-  base:SetColorTexture(T.line[1], T.line[2], T.line[3], 1)
-  c.msg = fs(parent, "GameFontDisableSmall", "LEFT")
-  c.msg:SetPoint("TOPLEFT", box.x, box.y - 4)
-  c.msg:SetWidth(box.w)
-  c.below = fs(parent, "GameFontHighlightSmall", "LEFT") -- legend under the x labels
-  c.below:SetPoint("TOPLEFT", box.x, box.y - box.h - 20)
-  c.extras[1] = c.below
-  -- Lines exist in this client if the plot can make one; otherwise bars and dots.
-  local ok, probe = pcall(function() return c.plot:CreateLine(nil, "OVERLAY") end)
-  c.useLines = ok and probe ~= nil
-  if c.useLines then
-    probe:Hide()
-    c.lines[1] = probe
-  end
-  return c
-end
-
---- Starts a drawing: every pooled object is free again.
----@param c GoldwrightChart
-local function begin(c)
-  c.nLines, c.nTexs = 0, 0
-end
-
---- Ends a drawing: hides the pooled objects it didn't use.
----@param c GoldwrightChart
-local function finish(c)
-  for i = c.nLines + 1, #c.lines do
-    c.lines[i]:Hide()
-  end
-  for i = c.nTexs + 1, #c.texs do
-    c.texs[i]:Hide()
-  end
-end
-
---- Draws a filled rectangle from the texture pool (at least 1 x 1 pixel).
----@param c GoldwrightChart
----@param x number left, from the plot's bottom-left
----@param y number bottom, from the plot's bottom-left
----@param w number width
----@param h number height
----@param color number[] {r, g, b}
----@param alpha number? default 1
----@param layer string? draw layer (default "ARTWORK")
----@return table texture
-local function rect(c, x, y, w, h, color, alpha, layer)
-  c.nTexs = c.nTexs + 1
-  local t = c.texs[c.nTexs]
-  if not t then
-    t = c.plot:CreateTexture(nil, "ARTWORK")
-    c.texs[c.nTexs] = t
-  end
-  t:SetDrawLayer(layer or "ARTWORK")
-  t:ClearAllPoints()
-  t:SetPoint("BOTTOMLEFT", c.plot, "BOTTOMLEFT", x, y)
-  t:SetSize(math.max(1, w), math.max(1, h))
-  t:SetColorTexture(color[1], color[2], color[3], alpha or 1)
-  t:Show()
-  return t
-end
-
---- Draws a dashed horizontal line across the plot at height y.
----@param c GoldwrightChart
----@param y number
----@param color number[]
-local function dashed(c, y, color)
-  local x = 0
-  while x < c.w do
-    rect(c, x, y - 0.5, math.min(DASH, c.w - x), 1, color, 1, "BORDER")
-    x = x + DASH + DASH_GAP
-  end
-end
-
---- Draws a line segment from the line pool (only when the client has Line objects).
----@param c GoldwrightChart
----@param x1 number
----@param y1 number
----@param x2 number
----@param y2 number
----@param color number[] {r, g, b}
----@param thickness number? default 2
----@return table line
-local function segment(c, x1, y1, x2, y2, color, thickness)
-  c.nLines = c.nLines + 1
-  local l = c.lines[c.nLines]
-  if not l then
-    l = c.plot:CreateLine(nil, "OVERLAY")
-    c.lines[c.nLines] = l
-  end
-  l:SetThickness(thickness or 2)
-  l:SetColorTexture(color[1], color[2], color[3], 1)
-  l:SetStartPoint("BOTTOMLEFT", c.plot, x1, y1)
-  l:SetEndPoint("BOTTOMLEFT", c.plot, x2, y2)
-  l:Show()
-  return l
-end
-
---- Draws a price line through points: lines where the client has them, dots otherwise; single
---- points between gaps get a dot either way.
----@param c GoldwrightChart
----@param pts { x: number, y: number? }[] points (nil y = gap)
----@param color number[] {r, g, b}
----@param dots boolean|nil also draw a dot on every point
----@param thickness number|nil line thickness (default 2)
-local function polyline(c, pts, color, dots, thickness)
-  for i = 1, #pts do -- every entry is a table, so # is safe here
-    local p, prev, nxt = pts[i], pts[i - 1], pts[i + 1]
-    if p.y then
-      if c.useLines and nxt and nxt.y then segment(c, p.x, p.y, nxt.x, nxt.y, color, thickness or 2) end
-      local alone = not (prev and prev.y) and not (nxt and nxt.y)
-      if dots or alone or not c.useLines then rect(c, p.x - 1.5, p.y - 1.5, 3, 3, color, 1, "OVERLAY") end
-    end
-  end
-end
-
---- Lowest and highest of values[1..n] (nil = gap) and `extra`. A flat range is widened a little
---- so it can be drawn.
----@param values table<number, number>
----@param n number entries to look at
----@param extra number|nil one more value to include
----@return number|nil lo nil when every value is missing
----@return number|nil hi
-local function range(values, n, extra)
-  local lo, hi
-  for i = 1, n + 1 do
-    local v = values[i]
-    if i == n + 1 then v = extra end
-    if v then
-      if not lo or v < lo then lo = v end
-      if not hi or v > hi then hi = v end
-    end
-  end
-  if not lo then return nil end
-  if hi == lo then
-    lo, hi = math.max(0, lo * 0.95 - 1), hi * 1.05 + 1
-  end
-  return lo, hi
-end
-
 --- Shows the chosen chart: its plot and extras when it has something to show, else its message.
 --- The other chart is hidden; the caption names the chart shown and its switch button is selected.
 local function refresh()
@@ -307,7 +127,7 @@ local function refresh()
 end
 
 --- Records whether a chart has something to show (or the message instead) and refreshes.
----@param c GoldwrightChart
+---@param c GoldwrightSellChart
 ---@param ready boolean
 ---@param msg string|nil message when not ready
 local function showChart(c, ready, msg)
@@ -346,7 +166,7 @@ end
 local function drawHistory(itemID)
   local c = hist
   local T = UI.Tokens()
-  begin(c)
+  Chart.Begin(c)
   c.points, c.marks = nil, nil
   local values, from = GW.History(itemID, side())
   local pack = GW.Pack()
@@ -367,8 +187,10 @@ local function drawHistory(itemID)
     local normal = here and here.avg7
     local ref = normal or (here and here.avg30) or w.avg
     local n = c.days
+    -- the scale: at least ±10% around the normal price, so a quiet week stays near the middle
     local lo, hi = range(w.values, n, ref)
-    local function y(v) return LABEL_PAD + (v - lo) / (hi - lo) * (c.h - 2 * LABEL_PAD) end
+    lo, hi = Chart.Steady(lo, hi, ref)
+    local y = Chart.PlotScale(c, lo, hi)
     dashed(c, y(ref), T.chartRef)
     local pts = {}
     for i = 1, n do
@@ -376,7 +198,7 @@ local function drawHistory(itemID)
       pts[i] = { x = 3 + (i - 1) / (n - 1) * (c.w - 6), y = v and y(v), day = w.firstDay + (i - 1) * 86400, price = v }
     end
     if c.useLines then
-      polyline(c, pts, T.gold, n <= 7)
+      Chart.Line(c, pts, T.gold, { fill = 0.12 })
     else
       local bw = c.w / n
       for i = 1, n do
@@ -394,8 +216,8 @@ local function drawHistory(itemID)
       if sold and sold.qty > 0 then
         p.sold, p.each, anySold = sold.qty, sold.money / sold.qty, true
         local sy = p.y or 4.5
-        rect(c, p.x - 4.5, sy - 4.5, 9, 9, { 0, 0, 0 }, 1, "ARTWORK")
-        rect(c, p.x - 3.5, sy - 3.5, 7, 7, T.gold, 1, "OVERLAY")
+        rect(c, p.x - 4.5, sy - 4.5, 9, 9, { 0, 0, 0 }, 1, "OVERLAY", 3)
+        rect(c, p.x - 3.5, sy - 3.5, 7, 7, T.gold, 1, "OVERLAY", 4)
       end
       if p.price then marks[#marks + 1] = p end
     end
@@ -417,7 +239,7 @@ local function drawHistory(itemID)
   for _, b in ipairs(c.toggles) do
     UI.SetSelected(b, b.days == c.days)
   end
-  finish(c)
+  Chart.Finish(c)
 end
 
 ---------------------------------------------------------------------------
@@ -430,7 +252,7 @@ end
 local function drawHours(itemID)
   local c = hrs
   local T = UI.Tokens()
-  begin(c)
+  Chart.Begin(c)
   c.bars, c.marks = nil, nil
   local profile = GW.Hours(itemID, side())
   local offset = math.floor(GW.UTCOffsetHours() + 0.5)
@@ -463,13 +285,27 @@ local function drawHours(itemID)
     -- a faint line at the current hour
     local now = (date("*t") or {}).hour or 0
     rect(c, (now + 0.5) * bw, 0, 1, c.h, T.faint, 0.8, "BORDER")
+    -- the price line's scale: at least ±10% around the day's average price
     local lo, hi = range(prices, 24)
+    if lo then
+      local sum, n = 0, 0
+      for h = 1, 24 do
+        if prices[h] then
+          sum, n = sum + prices[h], n + 1
+        end
+      end
+      lo, hi = Chart.Steady(lo, hi, sum / n)
+    end
+    -- the price line runs from just above the bars' foot to just under the labels
+    local py = lo and Chart.Scale(lo, hi, 6, top - 4)
     local marks = {}
     for h = 1, 24 do
       if (units[h] or 0) > 0 or prices[h] then
         marks[#marks + 1] = {
           x = (h - 0.5) * bw,
-          y = lo and prices[h] and (6 + (prices[h] - lo) / (hi - lo) * (top - 10)) or nil,
+          y = py and prices[h] and py(prices[h]) or nil,
+          bx = (h - 1) * bw, -- the light column behind the hour
+          bw = bw,
           hour = h - 1,
           units = units[h],
           price = prices[h],
@@ -483,9 +319,9 @@ local function drawHours(itemID)
       local pts = {}
       for h = 1, 24 do
         local p = prices[h]
-        pts[h] = { x = (h - 0.5) * bw, y = p and (6 + (p - lo) / (hi - lo) * (top - 10)) }
+        pts[h] = { x = (h - 0.5) * bw, y = p and py(p) }
       end
-      polyline(c, pts, T.gold, false)
+      Chart.Line(c, pts, T.gold)
       -- the real price range (range() widens a flat one so it can be drawn): one price if flat
       local pmin, pmax
       for h = 1, 24 do
@@ -504,51 +340,21 @@ local function drawHours(itemID)
     c.window = win
     showChart(c, true)
   end
-  finish(c)
+  Chart.Finish(c)
 end
 
 ---------------------------------------------------------------------------
--- hover (#13): exact values for the day or hour under the mouse (or the controller)
+-- hover (#13): the tooltip of a day or an hour
 ---------------------------------------------------------------------------
-local HOVER_EVERY = 0.05 -- seconds between looks at the mouse while it is over a chart
 
---- The mark nearest to x (plot coordinates).
----@param c GoldwrightChart
----@param x number
----@return number|nil index into c.marks
-local function nearest(c, x)
-  local best, at
-  for i, p in ipairs(c.marks or {}) do
-    if not best or math.abs(p.x - x) < math.abs(best.x - x) then
-      best, at = p, i
-    end
-  end
-  return at
-end
-
---- One tooltip row: a label on the left, the value on the right (money in one column).
----@param label string
----@param value string
-local function row(label, value)
-  local T = UI.Tokens()
-  GameTooltip:AddDoubleLine(label, value, T.label[1], T.label[2], T.label[3], 1, 1, 1)
-end
-
---- Fills the game tooltip for one mark. The rows are always the same, in the same order; your
---- sales and the notes under the hour only appear when they apply.
----@param c GoldwrightChart
+--- Fills the game tooltip for a day of the price history or an hour of the best time to post. The
+--- rows are always the same, in the same order; your sales and the notes under the hour only appear
+--- when they apply.
+---@param c GoldwrightSellChart
 ---@param p table the mark
-local function fillTooltip(c, p)
-  if p.rows then -- the Market window: a title and its rows (a row without a value is a line)
-    GameTooltip:SetText(p.title, 1, 1, 1)
-    for _, r in ipairs(p.rows) do
-      if r[2] then
-        row(r[1], r[2])
-      else
-        GameTooltip:AddLine(r[1], 1, 1, 1)
-      end
-    end
-  elseif c.key == "history" then
+local function sellTooltip(c, p)
+  local row = Chart.TooltipRow
+  if c.key == "history" then
     GameTooltip:SetText(dayLabel(p.day), 1, 1, 1)
     row(L["Market price"], GW.Money(p.price, true))
     row(c.refLabel, GW.Money(c.ref, true))
@@ -567,151 +373,12 @@ local function fillTooltip(c, p)
   end
 end
 
---- Stops inspecting a chart: the line, dot, column and tooltip go.
----@param c GoldwrightChart
-local function clearHover(c)
-  c.at = nil
-  if not c.cross then return end
-  c.cross:Hide()
-  c.mark:Hide()
-  c.lit:Hide()
-  if GameTooltip:GetOwner() == c.hit then GameTooltip:Hide() end
-end
-
---- Inspects one mark: the line and dot on it (on the hour chart a light column) and its tooltip
---- beside it, on the side with more room.
----@param c GoldwrightChart
----@param i number|nil index into c.marks
-local function inspect(c, i)
-  local p = i and c.marks and c.marks[i]
-  if not p then return clearHover(c) end
-  c.at = i
-  c.cross:ClearAllPoints()
-  c.cross:SetPoint("BOTTOMLEFT", c.plot, "BOTTOMLEFT", p.x - 0.5, 0)
-  c.cross:Show()
-  if p.y then
-    c.mark:ClearAllPoints()
-    c.mark:SetPoint("CENTER", c.plot, "BOTTOMLEFT", p.x, p.y)
-    c.mark:Show()
-  else
-    c.mark:Hide()
-  end
-  -- a light column behind the hour (or any mark with bx / bw)
-  local bx, bw = p.bx, p.bw
-  if not bx and c.key == "hours" then
-    bw = c.w / 24
-    bx = p.hour * bw
-  end
-  if bx then
-    c.lit:ClearAllPoints()
-    c.lit:SetPoint("BOTTOMLEFT", c.plot, "BOTTOMLEFT", bx, 0)
-    c.lit:SetSize(bw, c.h)
-    c.lit:Show()
-  else
-    c.lit:Hide()
-  end
-  local right = p.x > c.w / 2
-  GameTooltip:SetOwner(c.hit, "ANCHOR_NONE")
-  GameTooltip:ClearAllPoints()
-  GameTooltip:SetPoint(
-    right and "BOTTOMRIGHT" or "BOTTOMLEFT",
-    c.plot,
-    "BOTTOMLEFT",
-    p.x + (right and -12 or 12),
-    math.min((p.y or c.h / 2) + 12, c.h)
-  )
-  fillTooltip(c, p)
-  GameTooltip:Show()
-end
-
---- While the mouse is over a chart: every HOVER_EVERY seconds, the mark nearest the mouse.
----@param self table the chart's hit frame
----@param elapsed number
-local function track(self, elapsed)
-  local c = self.chart
-  c.wait = (c.wait or 0) - elapsed
-  if c.wait > 0 then return end
-  c.wait = HOVER_EVERY
-  local left = c.plot:GetLeft()
-  if not left then return end
-  local x = GetCursorPosition() / self:GetEffectiveScale() - left
-  local i = nearest(c, x)
-  if i ~= c.at then inspect(c, i) end
-end
-
---- Gives a chart its hover: a frame over the plot that takes the mouse (no work until the mouse
---- is over it), the line, dot and column it draws, and the controller's inspect (A, then left /
---- right through the marks, A or B to stop; Gamepad.Adjustable).
----@param c GoldwrightChart
-local function addHover(c)
-  local T = UI.Tokens()
-  c.cross = c.plot:CreateTexture(nil, "OVERLAY")
-  c.cross:SetSize(1, c.h)
-  c.cross:SetColorTexture(T.text[1], T.text[2], T.text[3], 0.45)
-  c.cross:Hide()
-  c.mark = c.plot:CreateTexture(nil, "OVERLAY", nil, 7)
-  c.mark:SetSize(7, 7)
-  c.mark:SetColorTexture(T.gold[1], T.gold[2], T.gold[3], 1)
-  c.mark:Hide()
-  c.lit = c.plot:CreateTexture(nil, "BORDER")
-  c.lit:SetColorTexture(1, 1, 1, 0.07)
-  c.lit:Hide()
-  local hit = CreateFrame("Button", nil, c.plot)
-  hit:SetAllPoints()
-  hit.chart = c
-  hit:SetScript("OnEnter", function(self)
-    c.wait = 0
-    self:SetScript("OnUpdate", track)
-    track(self, 0)
-  end)
-  local function stop(self)
-    self:SetScript("OnUpdate", nil)
-    clearHover(c)
-  end
-  hit:SetScript("OnLeave", stop)
-  hit:SetScript("OnHide", stop)
-  -- a click on a day: the Sell tab's price history opens the Market window (c.onClick)
-  hit:SetScript("OnClick", function()
-    if c.at and c.onClick then c.onClick(c.at) end
-  end)
-  c.hit = hit
-  if GW.Gamepad and GW.Gamepad.Adjustable then
-    local function count() return c.marks and #c.marks or 0 end
-    local function editing() return GW.Gamepad.editing and GW.Gamepad.editing.box == hit end
-    GW.Gamepad.Adjustable(hit, {
-      get = function() return c.at or count() end,
-      set = function(n)
-        if not editing() then return end
-        inspect(c, n)
-      end,
-      step = 1,
-      min = function() return 1 end,
-      max = count,
-      enabled = function() return c.ready and count() > 0 end,
-      show = function(on)
-        if on then
-          inspect(c, c.at or count())
-        else
-          clearHover(c)
-        end
-      end,
-    })
-    -- A again (done) on a day of the Sell tab's price history opens it, like a click.
-    local adjust = hit.OnSmartNavClick
-    hit.OnSmartNavClick = function(self)
-      local day = editing() and c.at
-      adjust(self)
-      if day and c.onClick then c.onClick(day) end
-    end
-  end
-end
-
 --- Inspects mark i of a chart as the mouse or the controller would (tests use it too).
 ---@param key string "history", "hours" or "market" (the Market window's chart)
 ---@param i number|nil index into that chart's marks; nil stops
 function Charts.Inspect(key, i)
   local c = key == "hours" and hrs or key == "market" and Charts.MarketChart() or hist
-  if c then inspect(c, i) end
+  if c then Chart.Inspect(c, i) end
 end
 
 ---------------------------------------------------------------------------
@@ -744,7 +411,7 @@ function Charts.Create(parent, box)
   end
 
   local plot = { x = box.x, y = box.y - 30, w = box.w, h = box.h - 30 - 36 }
-  hist = newChart(parent, "history", plot)
+  hist = Chart.New(parent, "history", plot)
   hist.days = 7
   hist.hi = fs(hist.plot, "GameFontDisableSmall", "LEFT")
   hist.hi:SetPoint("TOPLEFT", 3, -2)
@@ -777,7 +444,7 @@ function Charts.Create(parent, box)
     hist.extras[#hist.extras + 1] = b
   end
 
-  hrs = newChart(parent, "hours", plot)
+  hrs = Chart.New(parent, "hours", plot)
   local tz = fs(parent, "GameFontDisableSmall", "RIGHT")
   tz:SetPoint("TOPRIGHT", parent, "TOPLEFT", plot.x + plot.w, plot.y - plot.h - 4)
   tz:SetText(L["your time"])
@@ -793,10 +460,14 @@ function Charts.Create(parent, box)
     hrs.extras[#hrs.extras + 1] = l
   end
   hrs.below:SetWidth(plot.w)
-  addHover(hist)
-  addHover(hrs)
+  for _, c in ipairs({ hist, hrs }) do
+    Chart.AddHover(c)
+    c.tooltip = sellTooltip
+  end
   -- a click on a day of the price history opens the Market window (#16)
   hist.onClick = function() Charts.OpenMarket(current, currentName, hist.days) end
+  -- a new UI scale: both charts again (one Render draws both)
+  hist.redraw = function() Charts.Render(current, currentName) end
   Charts.history, Charts.hours = hist, hrs
   refresh()
 end
@@ -820,7 +491,7 @@ local MARKET_TABS = {
 --- The Market window and what it shows.
 ---@class GoldwrightMarketWindow
 ---@field frame table the window
----@field chart GoldwrightChart the chart ("market"), drawn by the open tab
+---@field chart GoldwrightSellChart the chart ("market"), drawn by the open tab
 ---@field tab string "price", "demand", "supply", "resell" or "trades"
 ---@field tabs table[] the tab buttons
 ---@field big table the big value
@@ -913,7 +584,7 @@ local function dayScale(w, lo, hi)
   c.xFirst:SetText(dayLabel(w.firstDay))
   c.xLast:SetText(dayLabel(w.firstDay + (mw.days - 1) * 86400))
   local function x(i) return 3 + (i - 1) / (mw.days - 1) * (c.w - 6) end
-  local function y(v) return LABEL_PAD + (v - lo) / (hi - lo) * (c.h - 2 * LABEL_PAD) end
+  local y = Chart.PlotScale(c, lo, hi)
   return x, y
 end
 
@@ -953,6 +624,7 @@ end
 ---@return number high
 ---@return number top
 ---@return number lowest
+---@return number median
 local function normalRange(w)
   local v = {}
   for i = 1, mw.days do
@@ -960,11 +632,11 @@ local function normalRange(w)
   end
   table.sort(v)
   local function pct(p) return v[math.max(1, math.min(#v, math.floor(p * (#v - 1) + 1.5)))] end
-  return pct(0.25), pct(0.75), math.min(v[#v], math.floor(pct(0.95) * 1.1 + 0.5)), v[1]
+  return pct(0.25), pct(0.75), math.min(v[#v], math.floor(pct(0.95) * 1.1 + 0.5)), v[1], pct(0.5)
 end
 
 --- Shades the normal range across the plot.
----@param c GoldwrightChart
+---@param c GoldwrightSellChart
 ---@param y fun(v: number): number
 ---@param low number
 ---@param high number
@@ -974,7 +646,8 @@ local function shadeRange(c, y, low, high, alpha)
   rect(c, 0, y(low), c.w, math.max(1, y(high) - y(low)), T.chartRef, alpha, "BORDER")
 end
 
---- A day chart's scales from lo to hi, clipping anything above hi to the top.
+--- A day chart's scales from lo to hi, clipping anything above hi to the top. Like the Sell tab's
+--- chart it shows at least ±10% around the normal price (the house's, else the days' median).
 ---@param w GoldwrightHistoryWindow
 ---@param lo number
 ---@param hi number
@@ -984,6 +657,8 @@ local function clippedScale(w, lo, hi)
   if hi <= lo then
     lo, hi = math.max(0, lo * 0.95 - 1), hi * 1.05 + 1
   end
+  local _, normal = houseData()
+  lo, hi = Chart.Steady(lo, hi, normal or select(5, normalRange(w)))
   local x, y = dayScale(w, lo, hi)
   return x, function(v) return y(math.min(v, hi)) end
 end
@@ -1015,8 +690,8 @@ local function drawPrice()
   local x, y = clippedScale(w, math.min(lowest, now or lowest), math.max(top, high, math.min(now or 0, top)))
   shadeRange(c, y, low, high, 0.35)
   local pts = dayPoints(w, x, y)
-  polyline(c, pts, T.gold)
-  if now then rect(c, x(mw.days) - 3.5, y(now) - 3.5, 7, 7, T.text, 1, "OVERLAY") end
+  Chart.Line(c, pts, T.gold)
+  if now then rect(c, x(mw.days) - 3.5, y(now) - 3.5, 7, 7, T.text, 1, "OVERLAY", 3) end
   local range = GW.Money(low) .. " – " .. GW.Money(high)
   c.marks = dayMarks(
     pts,
@@ -1108,15 +783,17 @@ local function drawDemand()
     end
   end
   c.marks = marks
-  -- the price line on its own scale, over the bars
+  -- the price line on its own scale (at least ±10% around the days' average), over the bars
   local plo, phi = range(w.values, mw.days)
   if plo then
+    plo, phi = Chart.Steady(plo, phi, w.avg)
+    local py = Chart.PlotScale(c, plo, phi)
     local pts = {}
     for i = 1, mw.days do
       local v = w.values[i]
-      pts[i] = { x = (i - 0.5) * bw, y = v and (LABEL_PAD + (v - plo) / (phi - plo) * (c.h - 2 * LABEL_PAD)) }
+      pts[i] = { x = (i - 0.5) * bw, y = v and py(v) }
     end
-    polyline(c, pts, T.gold)
+    Chart.Line(c, pts, T.gold)
   end
   c.hi:SetText(string.format(L["%s a day"], GW.Number(math.floor(top + 0.5))))
   c.xFirst:SetText(dayLabel(est.firstDay))
@@ -1180,8 +857,8 @@ local function drawSupply()
     end
   end
   rect(c, (nowH + 0.5) * bw, 0, 1, c.h, T.faint, 0.8, "BORDER")
-  polyline(c, pts, GW.SIGNAL_BLUE)
-  rect(c, (nowH + 0.5) * bw - 3.5, y(s.units) - 3.5, 7, 7, T.text, 1, "OVERLAY")
+  Chart.Line(c, pts, GW.SIGNAL_BLUE)
+  rect(c, (nowH + 0.5) * bw - 3.5, y(s.units) - 3.5, 7, 7, T.text, 1, "OVERLAY", 3)
   c.marks = marks
   c.hi:SetText(GW.Number(math.floor(top + 0.5)))
   c.xFirst:SetText(GW.HourLabel(0))
@@ -1213,9 +890,9 @@ local function drawResell()
   rect(c, 0, 0, c.w, y(under), GREEN, 0.12, "BORDER")
   dashed(c, y(under), GREEN)
   local pts = dayPoints(w, x, y)
-  polyline(c, pts, T.gold)
+  Chart.Line(c, pts, T.gold)
   for _, p in ipairs(pts) do
-    if p.price and p.price < under then rect(c, p.x - 2.5, p.y - 2.5, 5, 5, GREEN, 1, "OVERLAY") end
+    if p.price and p.price < under then rect(c, p.x - 2.5, p.y - 2.5, 5, 5, GREEN, 1, "OVERLAY", 3) end
   end
   local profitLabel = string.format(L["Profit each, resold at %s"], GW.Money(low))
   c.marks = dayMarks(
@@ -1276,7 +953,7 @@ local function drawTrades()
   local x, y = clippedScale(w, lo, hi)
   shadeRange(c, y, low, high, 0.2)
   local pts = dayPoints(w, x, y)
-  polyline(c, pts, T.faint, false, 1.5)
+  Chart.Line(c, pts, T.faint, { weight = 1.5 })
   local marks = {}
   for i, p in ipairs(pts) do
     local d = days[i]
@@ -1289,7 +966,17 @@ local function drawTrades()
         if k then
           local each = k.money / math.max(1, k.qty)
           local size = math.min(14, 5 + math.floor(math.sqrt(k.qty) / 3))
-          rect(c, p.x - size / 2, y(each) - size / 2, size, size, kind == "bought" and BOUGHT or T.gold, 1, "OVERLAY")
+          rect(
+            c,
+            p.x - size / 2,
+            y(each) - size / 2,
+            size,
+            size,
+            kind == "bought" and BOUGHT or T.gold,
+            1,
+            "OVERLAY",
+            3
+          )
           local text = kind == "bought" and L["Bought %d at %s each"] or L["Sold %d at %s each"]
           rows[#rows + 1] = { string.format(text, k.qty, GW.Money(each, true)) }
           dotY = y(each)
@@ -1317,8 +1004,8 @@ local DRAW = { price = drawPrice, demand = drawDemand, supply = drawSupply, rese
 --- Draws the open tab and marks its button.
 local function renderTab()
   local c = mw.chart
-  begin(c)
-  clearHover(c)
+  Chart.Begin(c)
+  Chart.ClearHover(c)
   c.marks = nil
   mw.big:SetText("")
   mw.words:SetText("")
@@ -1327,7 +1014,7 @@ local function renderTab()
     f:SetText("")
   end
   DRAW[mw.tab]()
-  finish(c)
+  Chart.Finish(c)
   for _, b in ipairs(mw.tabs) do
     UI.SetSelected(b, b.key == mw.tab)
   end
@@ -1390,7 +1077,7 @@ local function buildMarket()
   mw.chip:SetPoint("LEFT", mw.big, "RIGHT", 12, 0)
 
   local box = { x = 12, y = -46, w = cardW - 24, h = cardH - 46 - 58 }
-  local c = newChart(card, "market", box)
+  local c = Chart.New(card, "market", box)
   c.msg:SetFontObject("GameFontHighlight")
   c.msg:SetPoint("TOPLEFT", card, "TOPLEFT", box.x, box.y - 12)
   c.msg:SetSpacing(4)
@@ -1413,7 +1100,8 @@ local function buildMarket()
   c.note = fs(card, "GameFontDisableSmall", "LEFT")
   c.note:SetPoint("TOPLEFT", box.x, box.y - box.h - 34)
   c.extras[#c.extras + 1] = c.note
-  addHover(c)
+  Chart.AddHover(c)
+  c.redraw = function() renderTab() end
   mw.chart = c
   if GW.Gamepad and GW.Gamepad.Tabs then GW.Gamepad.Tabs(f, stepTab) end
   f:Hide()
@@ -1464,7 +1152,7 @@ function Charts.MarketTab(key)
 end
 
 --- The Market window's chart, once the window exists.
----@return GoldwrightChart|nil
+---@return GoldwrightSellChart|nil
 function Charts.MarketChart() return mw and mw.chart end
 
 --- The Market window's state (tests).
@@ -1485,8 +1173,8 @@ function Charts.Render(itemID, name)
   if name or itemID ~= current then currentName = name end
   current = itemID
   if not (hist and itemID) then return end
-  clearHover(hist)
-  clearHover(hrs)
+  Chart.ClearHover(hist)
+  Chart.ClearHover(hrs)
   drawHistory(itemID)
   drawHours(itemID)
 end

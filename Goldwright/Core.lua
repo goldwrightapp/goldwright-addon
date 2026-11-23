@@ -29,6 +29,7 @@
 ---@field blockedShown boolean|nil the "game blocked an action" message was shown this session
 ---@field UI GoldwrightUI shared UI helpers (UI.lua)
 ---@field RULES table pricing rules (Pricing.lua)
+---@field Chart table the chart building block every chart uses (Chart.lua)
 ---@field SellCharts table Sell panel charts (SellCharts.lua)
 ---@field HISTORY_MIN_DAYS number days with a price before the history chart shows (Selling.lua)
 ---@field POST_WINDOW number hours in the "best time to post" window (Selling.lua)
@@ -78,6 +79,9 @@ GW.DEFAULTS = {
   ttVendor = true,
   ttNoData = false, -- "No auction data yet" line for items we know nothing about
   ttSales = true, -- "You sold 34 · last 4s 90c each" (expanded view, Ledger.lua)
+  -- a stack in your bags (#44): "stack" prices all of it (expand key adds one item), "one" prices
+  -- one item (expand key adds the stack), "both" shows Min price for one and for the stack
+  ttStack = "stack",
   -- Sell tab
   bagSort = "value", -- order of the bag list: "value", "name", "category" or "quantity" (#22)
   windowScale = 1, -- size of Goldwright's windows, 0.6 to 1 (#23: Steam Deck, small screens)
@@ -362,7 +366,7 @@ end
 -- Since Forever 1.60.1 "Live Update 2" (client build 71037, 2026-11-20) the game hides the realm
 -- from add-ons on purpose (against layer hopping): GetRealmName() and GetNormalizedRealmName()
 -- return "", GetRealmID() 0. UnitFullName's second value is the character's surname on Forever
--- ("Bomo", "Stillwater"), not a realm. The ruleset comes from Ruleset.lua (goldwright-addon #28).
+-- ("Name", "Stillwater"), not a realm. The ruleset comes from Ruleset.lua (goldwright-addon #28).
 
 --- The realm's name, "" when the game hides it (always on Forever since build 71037).
 ---@return string
@@ -380,7 +384,7 @@ local function serverId()
 end
 
 --- The realm this character's data was saved under before build 71037, from the "Name-Realm" keys
---- of the ledger's mailboxes and the level plans ("Bomo-CAMWOWUS1Realm5PvE"). Only a realm whose
+--- of the ledger's mailboxes and the level plans ("Name-CAMWOWUS1Realm5PvE"). Only a realm whose
 --- name says its ruleset, and only when the name is on one such realm. nil otherwise.
 ---@param name string|nil character name
 ---@return string|nil realm

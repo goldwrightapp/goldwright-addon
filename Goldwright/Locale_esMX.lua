@@ -824,4 +824,10 @@ GW.Translate("esMX", {
   ["Total"] = "Total",
   ["Under Normal"] = "Bajo lo normal",
   ["Under Normal: %s"] = "Bajo lo normal: %s",
+  ["Stack prices"] = "Precios de pila",
+  ["Whole Stack"] = "Pila Completa",
+  ["One Item"] = "Una Unidad",
+  ["Both"] = "Ambos",
+  ["Stack"] = "Pila",
+  ["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."] = "Pila Completa: muestra el precio de la pila completa (mantén Shift para ver el precio de una unidad). Una Unidad: muestra el precio de una unidad (mantén Shift para ver el de la pila). Ambos: muestra los dos precios.",
 })
