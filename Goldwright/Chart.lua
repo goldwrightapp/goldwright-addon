@@ -459,8 +459,8 @@ local function track(self, elapsed)
 end
 
 --- Gives a chart its hover: a frame over the plot that takes the mouse (no work until the mouse is
---- over it), the line, dot and column it draws, a click (c.onClick), and the controller's inspect
---- (A, then left / right through the marks, A or B to stop; Gamepad.Adjustable).
+--- over it), the line, dot and column it draws, a click (c.onClick), and the controller's stepping
+--- (#19: left / right through the marks while the game's cursor is on the chart; Gamepad.Steppable).
 ---@param c GoldwrightChart
 function Chart.AddHover(c)
   local T = UI.Tokens()
@@ -486,6 +486,8 @@ function Chart.AddHover(c)
   hit:SetAllPoints()
   hit.chart = c
   hit:SetScript("OnEnter", function(self)
+    -- the controller's cursor selecting the chart enters it too: then the d-pad steps, not the mouse
+    if GW.Gamepad and GW.Gamepad.on then return end
     c.wait = 0
     self:SetScript("OnUpdate", track)
     track(self, 0)
@@ -500,34 +502,27 @@ function Chart.AddHover(c)
     if c.at and c.onClick then c.onClick(c.at) end
   end)
   c.hit = hit
-  if GW.Gamepad and GW.Gamepad.Adjustable then
-    local function count() return c.marks and #c.marks or 0 end
-    local function editing() return GW.Gamepad.editing and GW.Gamepad.editing.box == hit end
-    GW.Gamepad.Adjustable(hit, {
-      get = function() return c.at or count() end,
-      set = function(n)
-        if not editing() then return end
-        Chart.Inspect(c, n)
+  -- the controller (#19): with the game's cursor on the chart, left / right step from mark to mark
+  -- (staying put at the ends), up / down leave it, A acts like a click on the mark
+  if GW.Gamepad and GW.Gamepad.Steppable then
+    local function count() return c.ready and c.marks and #c.marks or 0 end
+    GW.Gamepad.Steppable(hit, {
+      step = function(dir)
+        local n = count()
+        if n == 0 then return end
+        Chart.Inspect(c, math.max(1, math.min(n, (c.at or (dir > 0 and 0 or n + 1)) + dir)))
       end,
-      step = 1,
-      min = function() return 1 end,
-      max = count,
-      enabled = function() return c.ready and count() > 0 end,
       show = function(on)
-        if on then
+        if on and count() > 0 then
           Chart.Inspect(c, c.at or count())
         else
           Chart.ClearHover(c)
         end
       end,
+      click = function()
+        if c.at and c.onClick then c.onClick(c.at) end
+      end,
     })
-    -- A again (done) on a mark acts like a click on it.
-    local adjust = hit.OnSmartNavClick
-    hit.OnSmartNavClick = function(self)
-      local at = editing() and c.at
-      adjust(self)
-      if at and c.onClick then c.onClick(at) end
-    end
   end
 end
 

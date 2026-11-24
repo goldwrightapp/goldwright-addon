@@ -122,6 +122,7 @@ function GW.BugReport()
       GW.Age(pack.builtAt)
     ) or ("Data: none loaded for " .. (h.packKey or "?")),
     "Scans: " .. (#scans > 0 and table.concat(scans, "; ") or "none"),
+    "Scan answer times: " .. (GW.ScanAnswerTimes and GW.ScanAnswerTimes() or "none"),
     "Cut: " .. (GW.CutText and GW.CutText() or "?"),
   }
   local settings = changedSettings()

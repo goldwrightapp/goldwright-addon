@@ -421,6 +421,30 @@ function GW.RealmKey()
   return oldRealmOf(UnitName and UnitName("player")) or ""
 end
 
+--- This character's key for what Goldwright keeps per character: its mailbox in the sales record
+--- (#46) and its level-up plans (#47), "Name~Surname~Region". On Forever a character's full name
+--- (first name and surname) is unique in its region, across factions and rulesets (tested in game,
+--- 2026-11-24: one "Name Stillwater" in US Normal blocks that full name on Horde, PvP and RP), while a
+--- first name alone is not ("Name Stillwater" and "Name Stillwasser" can both exist). Keyed by the
+--- first name alone, two such characters shared one mailbox and one plan. Nothing that can change for
+--- a character goes in (not the ruleset: the game gives none on Hardcore). "~" so these keys are
+--- never read as the old "Name-..." ones (GW.RealmKey).
+---@return string key
+---@return string|nil name the character's name, nil when the game doesn't give one
+function GW.CharacterKey()
+  local name, surname
+  if UnitFullName then
+    name, surname = UnitFullName("player")
+  end
+  name = name or (UnitName and UnitName("player")) or nil
+  local parts = {
+    name or "?",
+    surname or "",
+    GetCurrentRegionName and GetCurrentRegionName() or "",
+  }
+  return table.concat(parts, "~"), name
+end
+
 --- Detects the player's house: region, ruleset (Ruleset.lua) and faction. Stores it in GW.house.
 ---@return GoldwrightHouse house
 function GW.DetectHouse()

@@ -141,6 +141,8 @@ function GW.NoteRequest(fn, who, what)
   while #trail > TRAIL_MAX do
     table.remove(trail, 1)
   end
+  -- A full scan by anyone uses the account's one per 15 minutes (Scan.lua, #51).
+  if fn == "ReplicateItems" and GW.OnFullScanRequest then GW.OnFullScanRequest(who) end
 end
 
 --- The remembered requests, newest last (for tests and /gw debug).

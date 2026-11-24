@@ -466,9 +466,10 @@ end
 --- source gives the skill (then the second result says "skill unknown").
 --- Calls only read-only client getters (C_TradeSkillUI.GetAllRecipeIDs, GetRecipeInfo;
 --- GW.ProfessionSkill's; IsPlayerSpell; UnitLevel; UnitFactionGroup; C_Item.GetItemCount).
+---@param target number|nil the skill to plan up to (default 300, #31)
 ---@return GoldwrightLevelPlan|nil plan with .skillSource = where the skill came from
 ---@return string|nil why "no window" or "skill unknown" when there's no plan
-function GW.LevelPlanNow()
+function GW.LevelPlanNow(target)
   local api = C_TradeSkillUI
   if not api then return nil, "no window" end
   local known, line = {}, nil
@@ -513,6 +514,7 @@ function GW.LevelPlanNow()
     patternPrice = patternPrice,
     skillLine = line,
     skill = skill,
+    target = target or 300,
     maxSkill = maxSkill,
     known = known,
     price = price,

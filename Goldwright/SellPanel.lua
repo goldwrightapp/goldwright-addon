@@ -1308,6 +1308,9 @@ local function buildBags(view)
     state.offset = math.max(0, state.offset - delta) -- renderBags keeps it from scrolling past the end
     renderBags()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(list, function() return panel.rows end, function() return state.offset end)
+  end -- the D-pad scrolls it too (#57)
   for i = 1, ROWS do
     local row = CreateFrame("Button", nil, list)
     row:SetSize(BAGS_W - 2, ROW_H)

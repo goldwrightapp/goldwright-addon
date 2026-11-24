@@ -46,10 +46,37 @@ local function note(text, x)
   return f
 end
 
+-- Texts that name the Expanded view key (#45): one with %s for the key, one for None.
+local AVG_KEY = L["The 7- and 30-day average price (hold %s), and a line when the min price is well above or below it."]
+local AVG_NOKEY =
+  L["A line when the min price is well above or below the average price. The 7- and 30-day averages need an Expanded view key."]
+local STACK_KEY =
+  L["Whole Stack: shows the price of the whole stack (hold %s to see one item's price). One Item: shows the price of one item (hold %s to see the stack's price). Both: shows both prices."]
+local STACK_NOKEY =
+  L["Whole Stack: shows the price of the whole stack. One Item: shows the price of one item. Both: shows both prices."]
+
+--- The name of the Expanded view key in the client's language, or nil when it is None.
+---@return string|nil
+local function expandKeyName()
+  local k = GW.Opt("expandKey")
+  return (k == "SHIFT" and L["Shift"]) or (k == "CTRL" and L["Ctrl"]) or (k == "ALT" and L["Alt"]) or nil
+end
+
+--- A settings text naming the Expanded view key the player picked (every %s), or the text without
+--- a key when it is None: a note never tells you to hold a key you didn't pick (#45).
+---@param withKey string translated text with %s for the key
+---@param noKey string translated text for None
+---@return string
+local function keyText(withKey, noKey)
+  local key = expandKeyName()
+  if not key then return noKey end
+  return (withKey:gsub("%%s", function() return key end))
+end
+
 --- A check button bound to a boolean option.
 ---@param label string
 ---@param key string option key (GW.Opt / GW.SetOpt)
----@param tip? string tooltip text
+---@param tip? string|fun(): string tooltip text (a function: read each time it shows)
 ---@return table checkButton
 local function check(label, key, tip)
   local cb = UI.NewCheckButton(content)
@@ -66,7 +93,7 @@ local function check(label, key, tip)
   if tip then
     cb:SetScript("OnEnter", function(self)
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-      GameTooltip:SetText(tip, 1, 1, 1, 1, true)
+      GameTooltip:SetText(type(tip) == "function" and tip() or tip, 1, 1, 1, 1, true)
       GameTooltip:Show()
     end)
     cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -225,11 +252,7 @@ local function build()
     "ttNow",
     L["The cheapest listing right now, after skipping likely bait."]
   )
-  check(
-    L["Average prices and buy / sell signal"],
-    "ttNormal",
-    L["The 7- and 30-day average price (hold Shift), and a line when the min price is well above or below it."]
-  )
+  check(L["Average prices and buy / sell signal"], "ttNormal", function() return keyText(AVG_KEY, AVG_NOKEY) end)
   check(
     L["Sell rate and price trend"],
     "ttTrend",
@@ -240,10 +263,8 @@ local function build()
     "ttStack",
     { { "stack", L["Whole Stack"] }, { "one", L["One Item"] }, { "both", L["Both"] } }
   )
-  note(
-    L["Whole Stack: shows the price of the whole stack (hold Shift to see one item's price). One Item: shows the price of one item (hold Shift to see the stack's price). Both: shows both prices."],
-    20
-  )
+  local stackNote = note(keyText(STACK_KEY, STACK_NOKEY), 20)
+  table.insert(controls, function() stackNote:SetText(keyText(STACK_KEY, STACK_NOKEY)) end)
   check(L["Vendor comparison"], "ttVendor")
   check(
     L["Your sales (expanded view)"],

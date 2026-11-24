@@ -488,6 +488,7 @@ local function build(parent)
     cv.offset = math.max(0, math.min(cv.offset - delta, math.max(0, #cv.list - ROWS)))
     render()
   end)
+  if GW.Gamepad then GW.Gamepad.ScrollList(list, function() return view.rows end, function() return cv.offset end) end -- the D-pad scrolls it too (#57)
   view.rows = {}
   for i = 1, ROWS do
     local row = CreateFrame("Frame", nil, list)

@@ -114,6 +114,9 @@ local function create()
     state.offset = state.offset - delta
     render()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(list, function() return window.rows end, function() return state.offset end)
+  end -- the D-pad scrolls it too (#57)
   window.rows = {}
   for i = 1, MAX_LINES do
     -- a Button, so the tooltip, Shift-click and the controller's cursor work on an item line

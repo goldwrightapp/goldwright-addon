@@ -100,6 +100,7 @@ function Gamepad.Update()
     if rec.listed then listed = listed + 1 end
   end
   if Gamepad.SyncTabKeys then Gamepad.SyncTabKeys() end -- LB / RB follow the open windows
+  if not blocked and Gamepad.ApplyWaitingSteppable then Gamepad.ApplyWaitingSteppable() end
   return listed
 end
 
@@ -269,6 +270,163 @@ function Gamepad.Adjustable(box, spec)
     if Gamepad.editing and Gamepad.editing.box == self then Gamepad.EndEdit(false) end
   end)
   return box
+end
+
+---------------------------------------------------------------------------
+-- Scrolling a list with the D-pad
+---------------------------------------------------------------------------
+-- Goldwright's lists make only the rows that fit and scroll by changing what those rows show (the
+-- mouse wheel). The game's cursor only moves between buttons it can see, so down on the last row
+-- went nowhere (#57). A real scroll area wouldn't help: the game skips its buttons outside the
+-- visible part too (SmartNavigationMixin:IsButtonValid) and scrolls one only with the right stick.
+-- So each row's buttons get up / down overrides, as the charts get left / right: down on the last
+-- shown row scrolls the list one step and the cursor goes to the same button of the new last shown
+-- row. At the end of the list the override returns nothing, and the game moves the cursor on as
+-- usual (out of the list). Up on the first shown row the same way upwards.
+
+local lists = {} -- { list, rows: fun(): table[], offset: fun(): number, applied: boolean }
+
+--- The first and last shown rows.
+local function shownRange(rows)
+  local first, last
+  for i, row in ipairs(rows) do
+    if row:IsShown() then
+      first = first or i
+      last = i
+    end
+  end
+  return first, last
+end
+
+--- The row `b` is, or is in, and the key `b` has in that row (a button inside a row frame).
+local function rowOf(rows, b)
+  for i, row in ipairs(rows) do
+    if row == b then return i end
+    for k, v in pairs(row) do
+      if v == b then return i, k end
+    end
+  end
+end
+
+--- Up / down from `b`: nil to let the game move the cursor as usual, or where it goes after the
+--- list scrolled one step (`b` itself: true, it stays).
+local function edgeStep(rec, b, dir)
+  local rows = rec.rows()
+  local i, key = rowOf(rows, b)
+  if not i then return nil end
+  local first, last = shownRange(rows)
+  if i ~= (dir > 0 and last or first) then return nil end
+  local wheel = rec.list:GetScript("OnMouseWheel")
+  local before = rec.offset()
+  if wheel then wheel(rec.list, -dir) end
+  if rec.offset() == before then return nil end -- the end of the list: leave it as usual
+  first, last = shownRange(rows)
+  local row = rows[dir > 0 and last or first]
+  local target = row and (key and row[key] or row)
+  if not target or target == b then return true end
+  -- The list just moved its rows (sorted by Category the next item can sit in another row). The
+  -- game skips a button whose position isn't worked out yet (IsRectValid) and the cursor would stay
+  -- behind: asking for the position works it out now.
+  if target.GetRect then target:GetRect() end
+  if target.IsRectValid and not target:IsRectValid() then return true end
+  return target
+end
+
+--- The buttons in a frame, itself included (the cursor stops on buttons).
+local function buttonsOf(frame, out)
+  if frame:IsObjectType("Button") then out[#out + 1] = frame end
+  for _, child in ipairs({ frame:GetChildren() }) do
+    buttonsOf(child, out)
+  end
+  return out
+end
+
+--- Sets the up / down overrides on a list's row buttons. Returns whether the game took them.
+local function applyList(rec)
+  local dirs = SMART_NAV_INPUT_DIRECTION
+  if not (dirs and SmartNavigation_AddJumpNavigationOverride) then return true end
+  if restricted() then return false end
+  local rows = rec.rows()
+  if not rows or #rows == 0 then return false end -- not built yet
+  for _, row in ipairs(rows) do
+    for _, b in ipairs(buttonsOf(row, {})) do
+      for _, d in ipairs({ { dirs.DOWN, 1 }, { dirs.UP, -1 } }) do
+        local ok = pcall(SmartNavigation_AddJumpNavigationOverride, b, d[1], function()
+          local fine, where = pcall(edgeStep, rec, b, d[2])
+          if fine then return where end
+        end)
+        if not ok then return false end
+      end
+    end
+  end
+  return true
+end
+
+--- Lets the D-pad scroll a list (#57): `list` is the frame whose OnMouseWheel scrolls it, `rows`
+--- returns its rows top to bottom, `offset` how far it is scrolled. The overrides are set on the
+--- next Update out of combat (the rows may not be made yet).
+---@param list table
+---@param rows fun(): table[]
+---@param offset fun(): number
+function Gamepad.ScrollList(list, rows, offset)
+  if not Gamepad.Available() then return end
+  lists[#lists + 1] = { list = list, rows = rows, offset = offset }
+  Gamepad.Schedule()
+end
+
+---------------------------------------------------------------------------
+-- Stepping along a chart
+---------------------------------------------------------------------------
+-- A chart is one control with many points (#19). While the game's cursor is on it, left / right
+-- step from point to point and the cursor stays on the chart; up / down leave it as on any control.
+-- This uses the game's own per-control direction overrides (SmartNavigation_AddJumpNavigationOverride
+-- with a function that returns true: "stay here"), which Blizzard lets add-ons set without taint out
+-- of combat, on our own frame only. A acts like a click on the point. Charts made in combat get their
+-- overrides on the next Update out of combat.
+
+local waitingSteppable = {} -- { frame, spec } made while the game refused (combat)
+
+--- Sets a chart's left / right overrides. Returns whether the game took them.
+local function applySteppable(frame, spec)
+  local dirs = SMART_NAV_INPUT_DIRECTION
+  if not (dirs and SmartNavigation_AddJumpNavigationOverride) then return true end -- nothing to set
+  if restricted() then return false end
+  for _, d in ipairs({ { dirs.LEFT, -1 }, { dirs.RIGHT, 1 } }) do
+    local ok = pcall(SmartNavigation_AddJumpNavigationOverride, frame, d[1], function()
+      spec.step(d[2])
+      return true -- the cursor stays on the chart
+    end)
+    if not ok then return false end
+  end
+  return true
+end
+
+--- Lets the controller step along a chart: while the game's cursor is on `frame`, left / right call
+--- spec.step(-1 / 1), selecting it calls spec.show(true), leaving it spec.show(false), A spec.click().
+---@param frame table the chart's frame the cursor selects (a Button)
+---@param spec { step: fun(dir: number), show: fun(on: boolean), click?: fun() }
+---@return table frame
+function Gamepad.Steppable(frame, spec)
+  if not Gamepad.Available() then return frame end
+  frame.OnSmartNavSelect = function() spec.show(true) end
+  frame.OnSmartNavDeselect = function() spec.show(false) end
+  frame.OnSmartNavClick = function()
+    if spec.click then spec.click() end
+  end
+  if not applySteppable(frame, spec) then waitingSteppable[#waitingSteppable + 1] = { frame = frame, spec = spec } end
+  return frame
+end
+
+--- Gives the charts made in combat their left / right, and the lists their up / down (#57), from
+--- Update, out of combat.
+function Gamepad.ApplyWaitingSteppable()
+  for i = #waitingSteppable, 1, -1 do
+    local w = waitingSteppable[i]
+    if applySteppable(w.frame, w.spec) then table.remove(waitingSteppable, i) end
+  end
+  for _, rec in ipairs(lists) do
+    if not rec.applied then rec.applied = applyList(rec) end
+  end
 end
 
 ---------------------------------------------------------------------------

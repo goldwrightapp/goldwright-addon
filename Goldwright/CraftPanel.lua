@@ -388,6 +388,9 @@ local function showTab(key)
       GW.LevelView.Hide()
     end
   end
+  -- The list isn't drawn while Level up shows (render), so a profession switched meanwhile would
+  -- leave the old profession's rows on screen: draw it from what was read last (#50).
+  if not level then render() end
 end
 GW.ShowCraftTab = function(key)
   if panel then showTab(key) end
@@ -502,6 +505,9 @@ local function createPanel()
     state.offset = math.max(0, math.min(state.offset - delta, math.max(0, #state.rows - ROWS)))
     renderList()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(list, function() return panel.rows end, function() return state.offset end)
+  end -- the D-pad scrolls it too (#57)
   for i = 1, ROWS do
     local row = CreateFrame("Button", nil, list)
     row:SetSize(LIST_W, ROW_H)

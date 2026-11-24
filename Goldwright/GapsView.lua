@@ -146,6 +146,9 @@ local function create()
     state.offset = math.max(0, math.min(state.offset - delta, math.max(0, #state.rows - ROWS)))
     render()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(list, function() return window.rows end, function() return state.offset end)
+  end -- the D-pad scrolls it too (#57)
   window.rows = {}
   for i = 1, ROWS do
     local row = CreateFrame("Frame", nil, list)

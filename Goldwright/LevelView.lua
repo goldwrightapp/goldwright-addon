@@ -62,14 +62,41 @@ local function recipeInfo(spell)
   return string.format(L["Recipe %s"], spell), nil
 end
 
---- Where the plans are kept: GoldwrightDB.levelPlans["Name-Realm:line"].
+--- Where a profession's plan and target are kept for this character:
+--- GoldwrightDB.levelPlans / levelTargets["Name~Surname~Region:line"] (GW.CharacterKey, #47).
 ---@param line number
 ---@return string
-local function planKey(line)
+local function planKey(line) return GW.CharacterKey() .. ":" .. line end
+
+--- Where plans were kept before #47: by first name only ("Name-Realm:line", GW.RealmKey).
+---@param line number
+---@return string
+local function oldPlanKey(line)
   local name = UnitName and UnitName("player") or "?"
-  -- Stable across Forever's realm rename (build 71037 blanks the realm name, #28).
-  local realm = GW.RealmKey()
-  return name .. "-" .. realm .. ":" .. line
+  return name .. "-" .. GW.RealmKey() .. ":" .. line
+end
+
+--- This character's kept plan for a profession. One kept under the old key comes over to the new
+--- one (the old entry stays: GW.RealmKey still reads the realm it was saved under).
+---@param line number
+---@return table|nil kept { plan, at, target }
+local function keptPlan(line)
+  local plans = GoldwrightDB.levelPlans
+  if not plans then return nil end
+  local key = planKey(line)
+  if not plans[key] and plans[oldPlanKey(line)] then plans[key] = plans[oldPlanKey(line)] end
+  return plans[key]
+end
+
+--- The skill levels a plan can stop at (#31): the rank caps (150, 225 and 300 also give Legacy points).
+local TARGETS = { 75, 150, 225, 300 }
+
+--- The skill this character plans the profession up to: the chosen target, else 300.
+---@param line number
+---@return number
+local function targetOf(line)
+  local t = GoldwrightDB.levelTargets and GoldwrightDB.levelTargets[planKey(line)]
+  return tonumber(t) or 300
 end
 
 --- The open profession's skill line, when it's one the planner covers.
@@ -85,12 +112,12 @@ end
 
 --- Works the plan out again from today's prices and keeps it.
 local function replan()
-  local plan, why = GW.LevelPlanNow()
+  local plan, why = GW.LevelPlanNow(state.line and targetOf(state.line) or nil)
   state.plan, state.why, state.stepOffset, state.matOffset = plan, why, 0, 0
   state.at = GetServerTime and GetServerTime() or nil
   if plan then
     GoldwrightDB.levelPlans = GoldwrightDB.levelPlans or {}
-    GoldwrightDB.levelPlans[planKey(plan.skillLine)] = { plan = plan, at = state.at }
+    GoldwrightDB.levelPlans[planKey(plan.skillLine)] = { plan = plan, at = state.at, target = targetOf(plan.skillLine) }
   end
 end
 
@@ -103,9 +130,10 @@ local function loadPlan()
     state.plan, state.why = nil, "no window"
     return
   end
-  local kept = GoldwrightDB.levelPlans and GoldwrightDB.levelPlans[planKey(line)]
+  local kept = keptPlan(line)
   local skill = GW.ProfessionSkill(line)
-  if kept and kept.plan and skill and skill >= kept.plan.from and skill < kept.plan.to then
+  local sameTarget = kept and (kept.target or 300) == targetOf(line)
+  if sameTarget and kept.plan and skill and skill >= kept.plan.from and skill < kept.plan.to then
     state.plan, state.at, state.why = kept.plan, kept.at, nil
     return
   end
@@ -256,6 +284,8 @@ local function render()
       msg =
         L["Level up covers Alchemy, Blacksmithing, Enchanting, Engineering, Leatherworking, Tailoring and First Aid."]
     end
+  elseif plan.from >= plan.to and plan.to < 300 then
+    msg = string.format(L["You reached %d. Pick a higher target to plan further."], plan.to)
   elseif plan.from >= plan.to then
     msg = string.format(L["You're at %d: nothing left to level."], plan.from)
   end
@@ -263,7 +293,16 @@ local function render()
   view.message:SetShown(msg ~= nil)
   view.body:SetShown(plan ~= nil and msg == nil)
   view.replan:SetShown(state.line ~= nil)
+  local skillNow = state.line and GW.ProfessionSkill(state.line) or nil
+  local target = state.line and targetOf(state.line) or 300
+  view.planTo:SetShown(state.line ~= nil)
+  for _, b in ipairs(view.targets) do
+    b:SetShown(state.line ~= nil)
+    UI.SetSelected(b, b.target == target)
+    b:SetEnabled(not skillNow or b.target > skillNow)
+  end
   if not plan then return end
+  view.reach:SetText(string.format(L["To reach %d"], plan.to))
   local skill = GW.ProfessionSkill(plan.skillLine) or plan.from
   view.title:SetText(
     string.format(L["%s: skill %d to %d"], GW.ProfessionName() or L["Crafting"], math.max(skill, plan.from), plan.to)
@@ -324,6 +363,30 @@ local function create(parent)
   end)
   view.replan:SetPoint("TOPRIGHT", -10, -8)
 
+  -- the skill to plan up to (#31): only the ones above your skill can be picked
+  view.targets = {}
+  local right = view.replan
+  for i = #TARGETS, 1, -1 do
+    local b = UI.NewToggleButton(view)
+    b:SetSize(40, 22)
+    b:SetNormalFontObject("GameFontHighlightSmall")
+    b:SetText(tostring(TARGETS[i]))
+    b:SetPoint("RIGHT", right, "LEFT", i == #TARGETS and -10 or -2, 0)
+    b.target = TARGETS[i]
+    b:SetScript("OnClick", function()
+      if not state.line then return end
+      GoldwrightDB.levelTargets = GoldwrightDB.levelTargets or {}
+      GoldwrightDB.levelTargets[planKey(state.line)] = b.target ~= 300 and b.target or nil
+      replan()
+      render()
+    end)
+    view.targets[i] = b
+    right = b
+  end
+  view.planTo = fs(view, "GameFontHighlightSmall", "RIGHT")
+  view.planTo:SetPoint("RIGHT", right, "LEFT", -6, 0)
+  view.planTo:SetText(L["Plan to"])
+
   local body = CreateFrame("Frame", nil, view)
   body:SetAllPoints()
   view.body = body
@@ -346,6 +409,9 @@ local function create(parent)
     state.stepOffset = math.max(0, math.min(state.stepOffset - delta, math.max(0, n - STEP_ROWS)))
     renderSteps()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(list, function() return view.steps end, function() return state.stepOffset end)
+  end -- the D-pad scrolls it too (#57)
   view.steps = {}
   for i = 1, STEP_ROWS do
     local row = CreateFrame("Button", nil, list)
@@ -422,7 +488,7 @@ local function create(parent)
   local x = STEP_W + 28
   local w = (GW.CRAFT_INNER_W or 764) - x - 16
   local COST_W, COUNT_W = 110, 66 -- money with coin icons needs ~110 px ("36g 44s 57c")
-  UI.Header(body, string.format(L["To reach %d"], 300), x, -50)
+  view.reach = UI.Header(body, string.format(L["To reach %d"], 300), x, -50)
   local cols = fs(body, "GameFontDisableSmall", "RIGHT")
   cols:SetPoint("TOPRIGHT", body, "TOPLEFT", x + w - COST_W - 4, -52)
   cols:SetText(L["have / need"])
@@ -437,6 +503,9 @@ local function create(parent)
     state.matOffset = math.max(0, math.min(state.matOffset - delta, math.max(0, n - MAT_ROWS)))
     renderShopping()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(mats, function() return view.mats end, function() return state.matOffset end)
+  end -- the D-pad scrolls it too (#57)
   for i = 1, MAT_ROWS do
     local m = CreateFrame("Frame", nil, mats)
     m:SetSize(w, MAT_H)

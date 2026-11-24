@@ -260,17 +260,35 @@ end
 --- steps never makes the same mail look new twice.
 local visit
 
---- Which character's mailbox this is ("Name-Realm"): each character has its own.
-local function mailboxKey()
-  local name = UnitName and UnitName("player") or "?"
-  -- Stable across Forever's realm rename (build 71037 blanks the realm name, #28).
-  local realm = GW.RealmKey()
-  return name .. "-" .. realm
+-- Mail the player takes out of the box (or deletes or returns), by kind, until the next read of the
+-- visit: the game shows at most 50 mails, so this tells which kind left when one from out of view
+-- takes its place (#46). hooksecurefunc runs after the game's own function, while the mail is still
+-- in the box; it never changes what the function does.
+if hooksecurefunc then
+  for _, fn in ipairs({ "TakeInboxMoney", "AutoLootMailItem", "TakeInboxItem", "DeleteInboxItem", "ReturnInboxItem" }) do
+    if type(_G[fn]) == "function" then
+      hooksecurefunc(fn, function(i)
+        if not (visit and visit.taken and type(i) == "number") then return end
+        local ok, e = pcall(eventOf, i, subjectPatterns(), GetServerTime())
+        if ok and e then visit.taken[#visit.taken + 1] = signature(e) end
+      end)
+    end
+  end
 end
 
---- What the mailbox held when it was last read, as signature -> count. Before 0.4.2 nothing was
---- kept: then the events recorded for this character in the last two days stand in for it (mail
---- left in the box since 0.4.0 came out), so it isn't counted again.
+--- Which character's mailbox this is (GW.CharacterKey, #46): each character has its own, and keeps it.
+---@return string key
+---@return string|nil name the character's name, nil when the game doesn't give one
+local function mailboxKey() return GW.CharacterKey() end
+
+--- What the mailbox held when it was last read, as signature -> count.
+---
+--- A character without a record under its key yet (first visit with #46's keys) takes over its older
+--- records: "Name-Realm" from before Forever hid the realm, "Name-" from 0.7.3-0.7.5 after it, and
+--- "Name~..." from an earlier surname or faction. All of them, the most of each kind of mail any of
+--- them held, so no mail that one of them already counted is counted again (#46: 0.7.6 took the
+--- stale pre-update record and counted mail twice). Before 0.4.2 nothing was kept: then the events
+--- recorded for this character in the last two days stand in for it.
 ---@param d table the record
 ---@param key string mailboxKey()
 ---@param char string|nil character name
@@ -278,6 +296,23 @@ end
 ---@return table<string, number>
 local function lastInbox(d, key, char, now)
   if d.inbox[key] then return d.inbox[key] end
+  if char then
+    local esc = char:gsub("%p", "%%%0")
+    local merged, found = {}, false
+    for k, snap in pairs(d.inbox) do
+      if
+        type(k) == "string"
+        and type(snap) == "table"
+        and (k:match("^" .. esc .. "%-") or k:match("^" .. esc .. "~"))
+      then
+        found = true
+        for s, c in pairs(snap) do
+          if c > (merged[s] or 0) then merged[s] = c end
+        end
+      end
+    end
+    if found then return merged end
+  end
   local counts, from = {}, now - 2 * 86400
   for i = #d.events, 1, -1 do
     local x = d.events[i]
@@ -319,49 +354,84 @@ function GW.ReadLedgerMail()
   local d, now = data(), GetServerTime()
   d.inbox = d.inbox or {}
   local patterns = subjectPatterns()
-  local char = UnitName and UnitName("player") or nil
-  local key = mailboxKey()
+  local key, char = mailboxKey()
   local shown, total = GetInboxNumItems()
   shown = shown or 0
-  if not visit or visit.key ~= key then visit = { key = key, base = lastInbox(d, key, char, now), seen = {} } end
-  -- The n-th mail of a kind in the box is new when the box held fewer than n of that kind before.
-  local here, fresh = {}, {}
+  total = math.max(total or shown, shown)
+  if not visit or visit.key ~= key then
+    visit = { key = key, base = lastInbox(d, key, char, now), seen = {}, gone = {}, taken = {} }
+  end
+  local events, here = {}, {}
   for i = 1, shown do
     local e = eventOf(i, patterns, now)
     if e then
+      events[#events + 1] = e
       local s = signature(e)
       here[s] = (here[s] or 0) + 1
-      if here[s] > math.max(visit.base[s] or 0, visit.seen[s] or 0) then
-        e.char = char
-        if claimImported(d, e) then
-          byName = nil
+    end
+  end
+  -- Mail taken out of the box since the last read of this visit (#46). The game shows 50 mails at
+  -- most; when one is taken, one from out of view can take its place, so a taken mail can't be told
+  -- from the counts alone when both are the same kind. Up to the number the box shrank by: first the
+  -- kinds the player took (TakeInboxMoney and the like, watched below), then kinds there are fewer of.
+  if visit.last then
+    local drop = visit.lastTotal - total
+    local took = {}
+    for _, s in ipairs(visit.taken) do
+      if drop <= 0 then break end
+      took[s] = (took[s] or 0) + 1
+      drop = drop - 1
+    end
+    for s, c in pairs(visit.last) do
+      local n = math.min(math.max(0, c - (here[s] or 0) - (took[s] or 0)), drop)
+      took[s] = (took[s] or 0) + n
+      drop = drop - n
+    end
+    for s, n in pairs(took) do
+      if n > 0 then visit.gone[s] = (visit.gone[s] or 0) + n end
+    end
+  end
+  visit.taken = {}
+  visit.last, visit.lastTotal = here, total
+  -- The n-th mail of a kind is new when the box held fewer than n of that kind before: counting the
+  -- ones taken out during this visit, which no longer show.
+  local fresh, nth = {}, {}
+  for _, e in ipairs(events) do
+    local s = signature(e)
+    nth[s] = (nth[s] or 0) + 1
+    if nth[s] + (visit.gone[s] or 0) > math.max(visit.base[s] or 0, visit.seen[s] or 0) then
+      e.char = char
+      if claimImported(d, e) then
+        byName = nil
+      else
+        fresh[#fresh + 1] = e
+        pending = pending or { sold = 0, net = 0, expired = 0, cancelled = 0, bought = 0, spent = 0 }
+        if e.kind == "sold" then
+          pending.sold = pending.sold + 1
+          pending.net = pending.net + e.money - (e.cut or 0)
+        elseif e.kind == "bought" then
+          pending.bought = pending.bought + 1
+          pending.spent = pending.spent + e.money
         else
-          fresh[#fresh + 1] = e
-          pending = pending or { sold = 0, net = 0, expired = 0, cancelled = 0, bought = 0, spent = 0 }
-          if e.kind == "sold" then
-            pending.sold = pending.sold + 1
-            pending.net = pending.net + e.money - (e.cut or 0)
-          elseif e.kind == "bought" then
-            pending.bought = pending.bought + 1
-            pending.spent = pending.spent + e.money
-          else
-            pending[e.kind] = pending[e.kind] + 1
-          end
+          pending[e.kind] = pending[e.kind] + 1
         end
       end
     end
   end
   for s, c in pairs(here) do
+    c = c + (visit.gone[s] or 0)
     if c > (visit.seen[s] or 0) then visit.seen[s] = c end
   end
   -- What the box holds now, for the next visit: exactly, unless it holds more than it shows (then
-  -- mail out of view is still there, so nothing is forgotten until the box fits on screen again).
+  -- mail out of view is still there, so nothing is forgotten until the box fits on screen again;
+  -- less what was taken out during this visit).
   local snapshot = {}
   for s, c in pairs(here) do
     snapshot[s] = c
   end
-  if (total or shown) > shown then
+  if total > shown then
     for s, c in pairs(visit.base) do
+      c = c - (visit.gone[s] or 0)
       if (snapshot[s] or 0) < c then snapshot[s] = c end
     end
   end

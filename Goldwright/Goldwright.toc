@@ -12,7 +12,7 @@
 ## Notes-zhCN: WoW Forever 拍卖行价格。
 ## Notes-zhTW: WoW Forever 拍賣場價格。
 ## Author: Goldwright
-## Version: 0.7.9
+## Version: 0.7.10
 ## OptionalDeps: ElvUI, EllesmereUI
 ## SavedVariables: GoldwrightDB, GoldwrightScans
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02

@@ -8,10 +8,25 @@ local L = GW.L
 -- - the server answers in ~17-18 s with REPLICATE_ITEM_LIST_UPDATE, ~172,000 rows, 0-based;
 -- - the item id is the 17th value of GetReplicateItemInfo;
 -- - buyout is the listing's total (commodities come split into rows);
--- - one scan that returns data per ~15 min per account is allowed (rejected requests don't count).
-local ROWS_PER_TICK = 4000 -- rows read per frame (172k rows in ~2.5 s, verified)
-local ITEMS_PER_TICK = 600 -- items priced per frame
-local TIMEOUT = 90 -- no data after this many seconds means the server ignored the request
+-- - one scan that returns data per ~15 min per account is allowed (rejected requests don't count);
+-- - that's per account whichever add-on asks, and every add-on gets the answer (#51): Goldwright
+--   counts other add-ons' scans in its 15 minutes and reads their listings too;
+-- - a request the server refuses (too early) gets no answer at all: no error event (tested 2026-11-24),
+--   so only TIMEOUT tells; "Internal auction error" also follows failed purchases, so it can't tell;
+-- - REPLICATE_ITEM_LIST_UPDATE fires again and again for the same list as the game loads its items
+--   (55,595 times in 20 s after a 278,008-row answer, measured 2026-11-24), and the list arrives
+--   whole: its count never changed in those 20 s, and 10 saved scans matched the hourly API
+--   snapshots within 4%.
+-- Reading and pricing work for a fixed time each frame, then let the game draw (#53): a fast PC gets
+-- more done per frame and a slow one less, but no frame is held up much longer than BUDGET_MS. Game
+-- engines, browsers and TradeSkillMaster spread heavy work the same way.
+local BUDGET_MS = 8 -- half a frame at 60 fps
+local ROWS_PER_CHECK = 50 -- listings read between looks at the clock
+local ITEMS_PER_CHECK = 10 -- items priced between looks (an item with many prices takes longer)
+-- No data after this many seconds: the server ignored the request. Every answer measured so far came
+-- within about 40 s (14 scans to 2026-11-24, Blackwater in ~3 s); an answer after it is still read
+-- (#51), and each scan's answer time is kept and shown in /gw bug to learn more.
+local TIMEOUT = 60
 local KEEP_HISTORY = 10 -- recent scans kept and listed on the Scan tab (as many as fit above its note)
 GW.SCAN_COOLDOWN = 15 * 60
 
@@ -38,6 +53,8 @@ local GREY = UI.GREY
 ---@field requestedAt number server time of the request
 ---@field side string house the scan is for: "A", "H" or "N"
 ---@field early boolean requested before the 15-minute cooldown had passed
+---@field by string? the add-on that asked, when it wasn't Goldwright (#51): Goldwright reads its listings
+---@field unknownStart boolean? no request seen for this answer (a /reload in between): its wait is unknown
 ---@field dataAfter number? seconds from the request until the server sent data
 ---@field total number? number of rows the server sent
 ---@field dataAt number? server time the data arrived
@@ -57,6 +74,21 @@ local GREY = UI.GREY
 ---@field suffixRows number? listings read by suffix
 ---@field suffixes table<number, boolean>? items whose every suffix the scan could tell apart (#9)
 local run -- nil when idle
+---@type { by: string, t: number }|nil the last full-scan request anyone sent: who, GetTime()
+local lastRequest
+--- A full-scan request went out since the last answer was taken: the next list is a new answer (#51).
+local awaiting = false
+--- An answer was taken since the UI loaded.
+local taken = false
+--- At an auctioneer, from the game's own AUCTION_HOUSE_SHOW / _CLOSED: add-ons that replace the game's
+--- auction house window hide that window, but these still fire (#51).
+local atAuctioneer = false
+
+--- Whether the player is at an auctioneer, whichever window shows the auction house.
+---@return boolean
+local function atAuctionHouse()
+  return atAuctioneer or (GW.AuctionHouseOpen and GW.AuctionHouseOpen()) or false -- after a /reload there
+end
 local view -- the Scan tab
 
 --- The saved-variables table for scans, with its sub-tables created.
@@ -134,6 +166,20 @@ function GW.LastScanText(side)
   return string.format("%s (%s)", date("%H:%M", s.at), GW.Age(s.at))
 end
 
+--- How long the server took to answer the recent scans, newest first, for the bug report:
+--- "Alliance 18.2 s, Blackwater 3.1 s".
+---@return string|nil text nil when no recent scan has an answer time
+function GW.ScanAnswerTimes()
+  local parts = {}
+  for _, x in ipairs((GoldwrightScans and GoldwrightScans.history) or {}) do
+    if x.wait then
+      local house = tostring(x.house or ""):match("([^·]+)$") or "?"
+      parts[#parts + 1] = string.format("%s %.1f s", house:gsub("^%s+", ""), x.wait)
+    end
+  end
+  return #parts > 0 and table.concat(parts, ", ") or nil
+end
+
 local n = GW.Number
 
 local DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -158,6 +204,16 @@ end
 ---------------------------------------------------------------------------
 local render -- defined with the view
 
+--- Whether this frame's share of work is used up (#53). debugprofilestop is a millisecond timer
+--- shared by every add-on, and one may reset it (debugprofilestart): a reading below the slice's
+--- start counts as used up, so a reset never keeps a frame waiting.
+---@param started number debugprofilestop() when the slice began
+---@return boolean
+local function sliceUsed(started)
+  local used = debugprofilestop() - started
+  return used >= BUDGET_MS or used < 0
+end
+
 --- Ends the running scan, records the outcome in GW.lastScan and redraws the tab.
 ---@param outcome string "saved", "empty", "timeout", "closed" or "error"
 ---@param detail any extra information (the error message for "error")
@@ -165,8 +221,15 @@ local function finish(outcome, detail)
   local r = run
   if not r then return end
   run = nil
+  if r.by and outcome ~= "saved" and outcome ~= "error" then
+    -- another add-on's scan that brought nothing: nothing of Goldwright's failed (#51)
+    GW.Log("scan by %s: %s", r.by, outcome)
+    if render then render() end
+    return
+  end
   GW.lastScan = {
     outcome = outcome,
+    by = r.by,
     detail = detail,
     requestedAt = r.requestedAt,
     dataAt = r.dataAt,
@@ -195,15 +258,15 @@ local function guarded(fn)
   end
 end
 
---- Pricing phase: turns each item's price/quantity totals into market stats, ITEMS_PER_TICK per frame,
+--- Pricing phase: turns each item's price/quantity totals into market stats for BUDGET_MS a frame,
 --- then saves the result for this house.
 local priceStep
 priceStep = guarded(function()
   local r = run
   if not (r and r.phase == "pricing") then return end
-  for _ = 1, ITEMS_PER_TICK do
+  local started = debugprofilestop()
+  while r.keys[r.ki] do
     local id = r.keys[r.ki]
-    if not id then break end
     local list = {}
     for price, qty in pairs(r.agg[id]) do
       list[#list + 1] = { price = price, qty = qty }
@@ -218,6 +281,7 @@ priceStep = guarded(function()
       )
     end
     r.ki = r.ki + 1
+    if r.ki % ITEMS_PER_CHECK == 0 and sliceUsed(started) then break end
   end
   if r.ki <= #r.keys then
     if render then render() end
@@ -233,6 +297,9 @@ priceStep = guarded(function()
     total = r.total,
     secs = math.floor(GetTime() - r.started + 0.5),
     house = string.format("%s · %s · %s", h.region, h.ruleset, GW.HOUSE_NAMES[r.side]),
+    by = r.by,
+    -- seconds from the request until the server answered (for /gw bug)
+    wait = not r.unknownStart and r.dataAfter and math.floor(r.dataAfter * 10 + 0.5) / 10 or nil,
   })
   while #d.history > KEEP_HISTORY do
     table.remove(d.history)
@@ -288,16 +355,17 @@ local function suffixKey(link, itemID)
   return itemID .. ":" .. table.concat(bonus, ":")
 end
 
---- Reading phase: adds up quantity per item and unit price, ROWS_PER_TICK rows per frame, then starts
---- the pricing phase. Gear listings are also added up per suffix ("id:bonus"), read from each
+--- Reading phase: adds up quantity per item and unit price for BUDGET_MS a frame, then starts the
+--- pricing phase. Gear listings are also added up per suffix ("id:bonus"), read from each
 --- listing's link: the item id alone can't tell "of the Bear" from "of the Eagle" (#9).
 local readStep
 readStep = guarded(function()
   local r = run
   if not (r and r.phase == "reading") then return end
-  local stop = math.min(r.index + ROWS_PER_TICK - 1, r.last)
+  local started = debugprofilestop()
   local agg = r.agg
-  for i = r.index, stop do
+  local i = r.index
+  while i <= r.last do
     local _, _, count, _, _, _, _, _, _, buyout, _, _, _, _, _, _, itemID = C_AuctionHouse.GetReplicateItemInfo(i)
     if type(itemID) == "number" and buyout and buyout > 0 and count and count > 0 then
       local unit = math.floor(buyout / count + 0.5)
@@ -330,8 +398,10 @@ readStep = guarded(function()
     else
       r.skipped = r.skipped + 1 -- bid-only or no item id
     end
+    i = i + 1
+    if i % ROWS_PER_CHECK == 0 and sliceUsed(started) then break end
   end
-  r.index = stop + 1
+  r.index = i
   if r.index <= r.last then
     if render then render() end
     C_Timer.After(0, readStep)
@@ -358,12 +428,49 @@ readStep = guarded(function()
   C_Timer.After(0, priceStep)
 end)
 
+--- A scan Goldwright follows without having asked for it (#51).
+---@param started number GetTime() of the request
+---@param by string|nil the add-on that asked; nil for Goldwright
+---@return ScanRun
+local function followRun(started, by)
+  return {
+    phase = "waiting",
+    started = started,
+    requestedAt = GetServerTime() - math.floor(GetTime() - started + 0.5),
+    side = GW.AuctionSide(),
+    early = false,
+    by = by,
+  }
+end
+
 --- REPLICATE_ITEM_LIST_UPDATE: the server sent the listings; starts the reading phase.
 local function onData()
   local r = run
-  if not (r and r.phase == "waiting") then return end
-  r.dataAfter = GetTime() - r.started
+  if r and r.phase ~= "waiting" then return end -- already reading this answer
   local total = C_AuctionHouse.GetNumReplicateItems() or 0
+  if not r then
+    -- Nobody here was waiting: another add-on's scan, or Goldwright's after it stopped waiting (#51).
+    -- The server counts it either way, and its listings are as good as ours. The event repeats for a
+    -- list already taken, so a list is new only after a request, or, with none seen (a /reload in
+    -- between), when the last data is older than the 15 minutes.
+    local requested = awaiting
+    local new = requested or (not taken and GetServerTime() - GW.LastScanDataAt() >= GW.SCAN_COOLDOWN)
+    if total == 0 or not new then return end
+    awaiting, taken = false, true
+    if not atAuctionHouse() then
+      -- closed before they came: the list may be emptied while it's read, so it isn't
+      db().lastDataAt = GetServerTime()
+      return
+    end
+    -- the request this answers, however long the server took: the last one, sent since the last answer
+    local q = requested and lastRequest or nil
+    local by = not q and L["Another add-on"] or q.by ~= "Goldwright" and q.by or nil
+    r = followRun(q and q.t or GetTime(), by)
+    r.unknownStart = not q
+    run = r
+  end
+  awaiting, taken = false, true
+  r.dataAfter = GetTime() - r.started
   if total == 0 then return finish("empty") end
   r.total = total
   r.dataAt = GetServerTime()
@@ -405,7 +512,26 @@ function GW.StartScan(anyway)
   run = r
   GW.lastScan = nil
   C_AuctionHouse.ReplicateItems()
+  lastRequest = { by = "Goldwright", t = GetTime() }
+  awaiting = true
   GW.Log("scan requested (side %s, cooldown left %d s)", r.side, left)
+  if render then render() end
+  C_Timer.After(TIMEOUT, function()
+    if run == r and r.phase == "waiting" then finish("timeout") end
+  end)
+end
+
+--- Another add-on asked for a full scan (Diagnostics.lua watches the request, #51): it uses the
+--- account's one per 15 minutes, so Goldwright follows it and reads the listings when they come.
+---@param who string the caller, as GW.CallerOf names it
+function GW.OnFullScanRequest(who)
+  if who == "Goldwright" then return end -- StartScan follows its own
+  lastRequest = { by = who, t = GetTime() }
+  awaiting = true
+  if run or not atAuctionHouse() then return end
+  local r = followRun(GetTime(), who)
+  run = r
+  GW.Log("scan requested by %s", who)
   if render then render() end
   C_Timer.After(TIMEOUT, function()
     if run == r and r.phase == "waiting" then finish("timeout") end
@@ -415,11 +541,15 @@ end
 local events = CreateFrame("Frame")
 pcall(events.RegisterEvent, events, "REPLICATE_ITEM_LIST_UPDATE")
 events:RegisterEvent("AUCTION_HOUSE_CLOSED")
+pcall(events.RegisterEvent, events, "AUCTION_HOUSE_SHOW")
 events:SetScript("OnEvent", function(_, event)
   if event == "REPLICATE_ITEM_LIST_UPDATE" then
     guarded(onData)()
-  elseif event == "AUCTION_HOUSE_CLOSED" and run then
-    finish("closed")
+  elseif event == "AUCTION_HOUSE_SHOW" then
+    atAuctioneer = true
+  elseif event == "AUCTION_HOUSE_CLOSED" then
+    atAuctioneer = false
+    if run then finish("closed") end
   end
 end)
 
@@ -436,7 +566,8 @@ local function statusText()
   local h = GW.House()
   if run then
     if run.phase == "waiting" then
-      return L["Waiting for the server…"],
+      return run.by and string.format(L["%s asked for a full scan. Waiting for the server…"], run.by)
+        or L["Waiting for the server…"],
         string.format(
           run.early
               and L["%d s · usually 30–60 s · keep the auction house open · requested before the 15 minutes were up, so the server may ignore it"]
@@ -462,7 +593,12 @@ local function statusText()
   local last = GW.lastScan
   if last then
     if last.outcome == "saved" then
-      return string.format(L["Scanned %s listings at %s"], n(last.total), date("%H:%M", last.dataAt)),
+      return last.by and string.format(
+        L["%s scanned %s listings at %s"],
+        last.by,
+        n(last.total),
+        date("%H:%M", last.dataAt)
+      ) or string.format(L["Scanned %s listings at %s"], n(last.total), date("%H:%M", last.dataAt)),
         string.format(
           L["Your prices are now current for %s · %s · %s."],
           h.region,
@@ -532,7 +668,7 @@ render = function()
             n(x.total),
             x.secs or 0,
             x.house or ""
-          )
+          ) .. (x.by and ("  ·  " .. string.format(L["by %s"], x.by)) or "")
         or ""
     )
   end

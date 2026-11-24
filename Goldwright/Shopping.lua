@@ -1580,6 +1580,9 @@ local function buildListsPage(p)
     p.offset = (p.offset or 0) - delta
     render()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(tbl, function() return view.listRows end, function() return p.offset or 0 end)
+  end -- the D-pad scrolls it too (#57)
   view.listRows = {}
   for i = 1, LIST_ROWS do
     -- A row is a frame of separate buttons side by side (spyglass, the list itself, the tools), not
@@ -1811,6 +1814,9 @@ local function buildListPage(p)
     view.offset = (view.offset or 0) - delta
     render()
   end)
+  if GW.Gamepad then
+    GW.Gamepad.ScrollList(tbl, function() return view.rows end, function() return view.offset or 0 end)
+  end -- the D-pad scrolls it too (#57)
   view.rows = {}
   for i = 1, ROWS do
     local row = CreateFrame("Frame", nil, tbl)
