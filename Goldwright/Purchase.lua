@@ -16,6 +16,13 @@
 ---                  (reason "closed"): it may have gone through
 ---   "lateBought" / "lateFailed"  the answer to an unanswered purchase, within LATE_RESULT_WINDOW
 --- Blizzard's own Buy tab fires the same events: they only count while we have a purchase going.
+---
+--- Gear (goldwright-addon #61) is bought one auction at a time at its buyout: StartGear picks the
+--- auction and says "quote" at once (its price is fixed, there is no server step); Confirm buys it
+--- (PlaceBid, a protected call: only from the player's click). AUCTION_HOUSE_PURCHASE_COMPLETED for that
+--- auction is "bought"; an auction house error while it is being bought is "unavailable" when
+--- someone else bought it first (the database error the game reports for a gone auction), else
+--- "failed".
 local _, GW = ...
 
 GW.Purchase = {}
@@ -27,6 +34,8 @@ local LATE_RESULT_WINDOW = 300 -- seconds a late result still counts for an unan
 
 ---@class GoldwrightPurchase
 ---@field itemID number
+---@field gear? boolean one auction bought at its buyout (StartGear)
+---@field auctionID? number the gear auction
 ---@field name string
 ---@field qty number units asked for
 ---@field estimate number cost the tab showed, in copper
@@ -73,9 +82,43 @@ end
 ---@return boolean cancelled
 function GW.Purchase.Cancel(p)
   if not current or current.confirming or (p and p ~= current) then return false end
-  if C_AuctionHouse.CancelCommoditiesPurchase then pcall(C_AuctionHouse.CancelCommoditiesPurchase) end
+  if not current.gear and C_AuctionHouse.CancelCommoditiesPurchase then
+    pcall(C_AuctionHouse.CancelCommoditiesPurchase)
+  end
   current = nil
   return true
+end
+
+--- Picks one gear auction to buy at its buyout (#61). Its price is fixed, so it is "quoted" at once and
+--- Confirm (after the usual pause) buys it. Any unconfirmed purchase is let go first; refused while
+--- one is being confirmed.
+---@param opts { itemID: number, name: string, auctionID: number, buyout: number, onChange: function } plus any fields the tab wants back
+---@return GoldwrightPurchase|nil p nil while another purchase is being confirmed
+function GW.Purchase.StartGear(opts)
+  if current and current.confirming then return nil end
+  GW.Purchase.Cancel()
+  local p = {}
+  for k, v in pairs(opts) do
+    p[k] = v
+  end
+  p.gear, p.qty = true, 1
+  p.unit, p.total, p.estimate = opts.buyout, opts.buyout, opts.estimate or opts.buyout
+  p.at, p.quotedAt = GetTime(), GetTime()
+  local quote = {}
+  p.quote = quote
+  current, unanswered = p, nil
+  GW.Log("purchase gear: %s auction %s for %d", p.name, tostring(p.auctionID), p.total or 0)
+  C_Timer.After(QUOTE_TIMEOUT, function()
+    if current == p and p.quote == quote and not p.confirming and not p.done then
+      GW.Purchase.Cancel(p)
+      tell(p, "expired")
+    end
+  end)
+  tell(p, "quote")
+  C_Timer.After(GW.CONFIRM_DELAY + 0.05, function()
+    if current == p and not p.confirming then tell(p, "ready") end
+  end)
+  return p
 end
 
 --- Asks the auction house for the exact price of `qty` of an item. Any unconfirmed purchase is let go
@@ -121,7 +164,11 @@ end
 function GW.Purchase.Confirm(p)
   if not GW.Purchase.CanConfirm(p) then return false end
   p.confirming = true
-  C_AuctionHouse.ConfirmCommoditiesPurchase(p.itemID, p.qty)
+  if p.gear then
+    C_AuctionHouse.PlaceBid(p.auctionID, p.total) -- the buyout: the auction is bought outright
+  else
+    C_AuctionHouse.ConfirmCommoditiesPurchase(p.itemID, p.qty)
+  end
   GW.Log("purchase confirm: %d x %s for %d", p.qty, p.name, p.total)
   C_Timer.After(CONFIRM_TIMEOUT, function()
     if current == p and not p.done then giveUp(p, "timeout") end
@@ -144,10 +191,33 @@ local function onEvent(event, a1, a2)
   local p = current
   if not p then
     -- the answer to a purchase we stopped waiting for
-    if unanswered and event:find("^COMMODITY_PURCHASE") then
+    if unanswered and not unanswered.gear and event:find("^COMMODITY_PURCHASE") then
       local late = unanswered
       unanswered = nil
       tell(late, event == "COMMODITY_PURCHASE_SUCCEEDED" and "lateBought" or "lateFailed")
+    elseif
+      unanswered
+      and unanswered.gear
+      and event == "AUCTION_HOUSE_PURCHASE_COMPLETED"
+      and a1 == unanswered.auctionID
+    then
+      local late = unanswered
+      unanswered = nil
+      tell(late, "lateBought")
+    end
+    return
+  end
+  if p.gear then
+    -- gear answers with its own events; the commodity ones aren't ours
+    if not p.confirming then return end
+    if event == "AUCTION_HOUSE_PURCHASE_COMPLETED" and a1 == p.auctionID then
+      p.done, current = true, nil
+      tell(p, "bought")
+    elseif event == "AUCTION_HOUSE_SHOW_ERROR" then
+      current = nil
+      local gone = Enum and Enum.AuctionHouseError and a1 == Enum.AuctionHouseError.DatabaseError
+      GW.Log("purchase gear error %s", tostring(a1))
+      tell(p, gone and "unavailable" or "failed", tostring(a1))
     end
     return
   end
@@ -186,6 +256,8 @@ for _, e in ipairs({
   "COMMODITY_PRICE_UNAVAILABLE",
   "COMMODITY_PURCHASE_SUCCEEDED",
   "COMMODITY_PURCHASE_FAILED",
+  "AUCTION_HOUSE_PURCHASE_COMPLETED",
+  "AUCTION_HOUSE_SHOW_ERROR",
   "AUCTION_HOUSE_CLOSED",
 }) do
   pcall(events.RegisterEvent, events, e)

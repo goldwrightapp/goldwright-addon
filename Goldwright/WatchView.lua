@@ -19,11 +19,12 @@ local state = { lines = {}, offset = 0, at = 0 }
 
 --- An item's link (quality colour, for the tooltip and Shift-click) and icon from the client.
 ---@param id number
+---@param variantLink? string a gear variant's link (GW.ItemNames.KeyLink), for its own name and stats
 ---@return string|nil link
 ---@return number|string|nil icon
-local function itemInfo(id)
+local function itemInfo(id, variantLink)
   local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-  local _, link = getInfo and getInfo(id)
+  local _, link = getInfo and getInfo(variantLink or id) -- a gear variant: its own link and name (#60)
   local icon = C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(id)
   return link, icon
 end
@@ -74,7 +75,7 @@ local function render()
         row.name:SetPoint("LEFT", 4, 0)
       else
         local h = line.hit
-        local link, icon = itemInfo(h.entry.itemID)
+        local link, icon = itemInfo(h.entry.itemID, h.entry.variant and GW.ItemNames.KeyLink(GW.EntryKey(h.entry)))
         row.link = link
         row.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
         row.name:SetText(link or h.entry.name)

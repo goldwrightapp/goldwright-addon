@@ -142,7 +142,7 @@ end
 ---@param variant string? GW.LinkVariant of the item being priced: item rows of another random suffix
 --- are left out. A search (Blizzard's Sell window's above all) can return every suffix of the item,
 --- and they share one item id (goldwright-addon #25). "" or nil keeps every row.
----@return { price: number, qty: number, own: boolean?, ownQty: number? }[] list price is per unit
+---@return { price: number, qty: number, own: boolean?, ownQty: number?, auctionID: number? }[] list price is per unit; auctionID: an item row's auction (#61)
 ---@return string|nil source "commodity", "item" or nil when empty
 ---@return number commodityCount number of commodity results the client reported
 ---@return number itemCount number of item results the client reported
@@ -177,7 +177,7 @@ function GW.CollectSearchResults(itemID, itemKey, variant)
         other = other + r.quantity -- another suffix of the item
       else
         local each = stacks and math.floor(r.buyoutAmount / r.quantity + 0.5) or r.buyoutAmount
-        list[#list + 1] = { price = each, qty = r.quantity, own = r.containsOwnerItem }
+        list[#list + 1] = { price = each, qty = r.quantity, own = r.containsOwnerItem, auctionID = r.auctionID }
       end
     end
   end

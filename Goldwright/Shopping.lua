@@ -21,6 +21,7 @@ local GREY, WHITE = UI.GREY, UI.WHITE
 ---@class GoldwrightShoppingEntry
 ---@field name string item name as typed, or from the link
 ---@field itemID? number item id (nil until a name-only entry is found by a browse search)
+---@field variant? string a gear variant's bonus ids ("12727", GW.LinkVariant): that variant only (#60)
 ---@field max? number most to pay per item, in copper
 ---@field maxPct? number most to pay per item, as a % of market value (instead of `max`)
 ---@field want? number how many to buy
@@ -97,6 +98,31 @@ function GW.Lists()
   return GoldwrightDB.lists
 end
 
+--- An entry's Goldwright data key: the item id, or "id:bonus" for a gear variant (#60).
+---@param e GoldwrightShoppingEntry
+---@return number|string|nil
+function GW.EntryKey(e)
+  if not e.itemID then return nil end
+  return e.variant and (e.itemID .. ":" .. e.variant) or e.itemID
+end
+
+--- The auction house key to search an entry with: a gear variant's own key (on Forever each variant
+--- is listed under its own suffix number, #58), else the item's.
+---@param e GoldwrightShoppingEntry
+---@return table itemKey
+local function searchKey(e)
+  return (e.variant and GW.ItemNames.AuctionKey(GW.EntryKey(e))) or C_AuctionHouse.MakeItemKey(e.itemID)
+end
+
+--- A gear variant from a link: its bonus ids ("12727"), nil for a plain item or a suffix field link.
+---@param link? string
+---@return string|nil
+local function linkVariant(link)
+  local v = GW.LinkVariant(link)
+  if v and v ~= "" and not v:find("^s") then return v end
+  return nil
+end
+
 --- A new list entry from what the player typed or shift-clicked. A plain name is looked up with
 --- GetItemInfo, which only knows items the client has cached; otherwise the id stays nil.
 ---@param itemText? string item name (optionally in quotes) or item link
@@ -108,13 +134,25 @@ function GW.MakeEntry(itemText, maxText, wantText)
   itemText = strtrim(itemText or "")
   if itemText == "" then return nil, L["Type an item name or Shift-click an item."] end
   local id, name = GW.LinkItem(itemText)
+  local variant = linkVariant(itemText)
   if not id then
     name = itemText:gsub('^"(.*)"$', "%1")
+    -- a gear variant's full name ("Medicine Staff of the Tiger"): that variant (#60). The game's
+    -- lookup by name only knows the base item.
+    for _, m in ipairs(GW.ItemNames and GW.ItemNames.Match(name, 8) or {}) do
+      if m.key ~= m.id and m.name:lower() == name:lower() then
+        id, name = m.id, m.name
+        variant = select(2, tostring(m.key):match("^(%d+):(.+)$"))
+        break
+      end
+    end
+  end
+  if not id then
     local getInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
     local _, link = getInfo and getInfo(name)
     id = link and GW.LinkItem(link)
   end
-  local e = { name = name or string.format(L["item %d"], id), itemID = id }
+  local e = { name = name or string.format(L["item %d"], id), itemID = id, variant = variant }
   if strtrim(maxText or "") ~= "" then
     e.max, e.maxPct = GW.ParseMoney(maxText)
     if not e.max and not e.maxPct then return nil, L["Max price: e.g. 75c, 1s 50c, 2g or 80% (of market)."] end
@@ -142,6 +180,7 @@ function GW.ExportLists(lists)
     for _, e in ipairs(l.entries) do
       local t = { clean(e.name) }
       if e.itemID then t[#t + 1] = "id=" .. e.itemID end
+      if e.itemID and e.variant then t[#t + 1] = "v=" .. e.variant end
       if e.max then t[#t + 1] = "max=" .. e.max end
       if e.maxPct then t[#t + 1] = "max=" .. e.maxPct .. "%" end
       if e.want then t[#t + 1] = "qty=" .. e.want end
@@ -218,6 +257,9 @@ function GW.ImportLists(text)
             local v = eq and strtrim(f:sub(eq + 1)) or ""
             if k == "id" then
               e.itemID = wholeNumber(v, 9999999)
+            elseif k == "v" then
+              -- a gear variant's bonus ids (#60): digits and colons only
+              e.variant = (#v <= 40 and v:match("^%d+[%d:]*$") and not v:find("::")) and v or nil
             elseif k == "qty" then
               e.want = wholeNumber(v, 99999)
             elseif k == "max" then
@@ -227,8 +269,9 @@ function GW.ImportLists(text)
               end
             end
           end
+          if not e.itemID then e.variant = nil end
           -- The client's own name for the id wins, so a shared list can't show one item and buy another.
-          e.name = GW.ShopItemName(e.itemID) or e.name
+          e.name = (e.variant and GW.ItemNames.Variant(GW.EntryKey(e))) or GW.ShopItemName(e.itemID) or e.name
           list.entries[#list.entries + 1] = e
         end
       end
@@ -257,7 +300,7 @@ end
 ---@param e GoldwrightShoppingEntry
 ---@return string
 local function entryName(e)
-  local real = GW.ShopItemName(e.itemID)
+  local real = (e.variant and GW.ItemNames.Variant(GW.EntryKey(e))) or GW.ShopItemName(e.itemID)
   if real and real ~= e.name then e.name = real end
   return e.name
 end
@@ -293,7 +336,7 @@ end
 
 --- Market value of an item at the auction house you are shopping at (Blackwater in neutral towns,
 --- else your faction's; scan or data pack), falling back to the 7-day and then the 30-day normal price.
----@param id? number item id
+---@param id? number|string item id, or "id:bonus" for a gear variant
 ---@return number|nil copper
 local function market(id)
   local d = id and GW.ItemData(id)
@@ -308,7 +351,7 @@ end
 function GW.EntryMax(e)
   if e.max then return e.max end
   if e.maxPct then
-    local m = market(e.itemID)
+    local m = market(GW.EntryKey(e))
     return m and math.floor(m * e.maxPct / 100) or nil
   end
   return nil
@@ -317,7 +360,7 @@ end
 --- "20% under market" / "at market" (within 3%) / "35% over market", with a colour: blue or orange
 --- once the difference reaches the signalPct setting, grey otherwise.
 ---@param price? number unit price in copper
----@param id? number item id
+---@param id? number|string item id, or "id:bonus" for a gear variant
 ---@return string|nil text nil without a market value or price
 ---@return number[]? color {r, g, b}
 function GW.MarketText(price, id)
@@ -411,15 +454,17 @@ local function send(e, purpose)
   sv.token, sv.purpose = token, purpose
   GW.NoteSearch()
   if purpose == "search" then
-    C_AuctionHouse.SendSearchQuery(C_AuctionHouse.MakeItemKey(e.itemID), sorts(), true)
+    C_AuctionHouse.SendSearchQuery(searchKey(e), sorts(), true)
   else
     C_AuctionHouse.SendBrowseQuery({ searchString = e.name, sorts = sorts(), filters = {}, itemClassFilters = {} })
   end
   GW.Log("shopping %s for %s (id %s)", purpose, e.name, tostring(e.itemID))
   C_Timer.After(SEARCH_TIMEOUT, function()
     if sv.token == token and sv.current == e then
-      if purpose == "search" and #GW.CollectSearchResults(e.itemID, C_AuctionHouse.MakeItemKey(e.itemID)) == 0 then
-        -- an item search with no answer: try the browse search (random-suffix gear answers there)
+      if purpose == "search" and #GW.CollectSearchResults(e.itemID, searchKey(e), e.variant) == 0 then
+        -- an item search with no answer: try the browse search (random-suffix gear answers there).
+        -- Not for one variant: a name search would bring every variant's listings (#60).
+        if e.variant then return finishEntry(e, { kind = "none" }) end
         if GW.CanSearch() then return send(e, "browse") end
       end
       finishEntry(e, { kind = "unknown" })
@@ -547,12 +592,32 @@ local function onSearchResults(event, arg1)
     finishEntry(e, { kind = "commodity", plan = plan })
   elseif event == "ITEM_SEARCH_RESULTS_UPDATED" or event == "ITEM_SEARCH_RESULTS_ADDED" then
     if not (type(arg1) == "table" and arg1.itemID == e.itemID) then return end
-    local list = GW.CollectSearchResults(e.itemID, arg1)
+    -- another suffix's answer (Blizzard's Browse tab) isn't this variant's (#60)
+    local want = e.variant and searchKey(e).itemSuffix or 0
+    if want ~= 0 and (arg1.itemSuffix or 0) ~= 0 and arg1.itemSuffix ~= want then return end
+    local list = GW.CollectSearchResults(e.itemID, arg1, e.variant)
     if #list == 0 then
-      if sv.purpose == "search" and GW.CanSearch() then send(e, "browse") end -- suffix gear: browse instead
+      if e.variant then
+        if event == "ITEM_SEARCH_RESULTS_UPDATED" then finishEntry(e, { kind = "none" }) end
+      elseif sv.purpose == "search" and GW.CanSearch() then
+        send(e, "browse") -- suffix gear: browse instead
+      end
       return
     end
-    finishEntry(e, { kind = "item", plan = GW.BuyPlan(list, GW.EntryMax(e)) })
+    -- gear is bought one listing at a time (#61): the cheapest of others' at or under the max
+    local max, pick = GW.EntryMax(e), nil
+    for _, x in ipairs(list) do
+      if
+        not x.own
+        and x.auctionID
+        and x.price
+        and (not max or x.price <= max)
+        and (not pick or x.price < pick.price)
+      then
+        pick = x
+      end
+    end
+    finishEntry(e, { kind = "item", plan = GW.BuyPlan(list, max), pick = pick })
   end
 end
 
@@ -749,6 +814,19 @@ local function buyClick(e)
     if render then render() end
     return
   end
+  if res and res.kind == "item" and res.pick then
+    -- gear (#61): the listing picked by the search; Confirm buys that one
+    local p = GW.Purchase.StartGear({
+      itemID = e.itemID,
+      name = entryName(e),
+      auctionID = res.pick.auctionID,
+      buyout = res.pick.price,
+      entry = e,
+      onChange = onBuyChange,
+    })
+    if p and render then render() end
+    return
+  end
   if not (res and res.kind == "commodity" and res.plan.units > 0) then return end
   entryName(e)
   local p = GW.Purchase.Start({
@@ -769,7 +847,9 @@ end
 local function showInBuyTab(e)
   if not GW.CanSearch() then return toast(L["Waiting for a search slot: try again in a moment."], GW.SIGNAL_ORANGE) end
   GW.NoteSearch()
-  C_AuctionHouse.SendBrowseQuery({ searchString = e.name, sorts = sorts(), filters = {}, itemClassFilters = {} })
+  -- a gear variant's suffix isn't part of the searchable name: search its base item (#60)
+  local name = e.variant and GW.ShopItemName(e.itemID) or e.name
+  C_AuctionHouse.SendBrowseQuery({ searchString = name, sorts = sorts(), filters = {}, itemClassFilters = {} })
   toast(L["Shown in Blizzard's list on the left: buy it there."], GREY)
 end
 
@@ -783,7 +863,7 @@ local WATCH_LOGIN_DELAY = 8 -- seconds after login before the watch line, so it 
 ---@param e GoldwrightShoppingEntry
 ---@return GoldwrightItemSide|nil
 function GW.EntryData(e)
-  local d = e.itemID and GW.ItemData(e.itemID)
+  local d = e.itemID and GW.ItemData(GW.EntryKey(e))
   local side = GW.AuctionSide and GW.AuctionSide() or GW.House().side
   return d and d[side] or nil
 end
@@ -846,7 +926,7 @@ function GW.WatchCheck(all)
   for index, l in ipairs(GW.Lists()) do
     if l.watch then
       for _, h in ipairs(GW.WatchHits(l)) do
-        local id = h.entry.itemID
+        local id = GW.EntryKey(h.entry) -- a gear variant counts as its own item (#60)
         if not now[id] then
           now[id] = true
           h.list, h.index = l, index
@@ -857,7 +937,7 @@ function GW.WatchCheck(all)
   end
   local tell = {}
   for _, h in ipairs(hits) do
-    if all or not seen[h.entry.itemID] then tell[#tell + 1] = h end
+    if all or not seen[GW.EntryKey(h.entry)] then tell[#tell + 1] = h end
   end
   w.seen[key] = now
   if #tell > 0 then
@@ -949,7 +1029,7 @@ local function foundText(e)
     text = string.format(L["%s listed from %s"], n(p.listed), GW.Money(p.cheapest))
       .. (r.variants and r.variants > 1 and (" " .. GW.Plural(r.variants, "(%d version)", "(%d versions)")) or "")
   end
-  local mt, color = GW.MarketText(p.avg or p.cheapest, e.itemID)
+  local mt, color = GW.MarketText(p.avg or p.cheapest, GW.EntryKey(e))
   return text .. (mt and ("  ·  " .. mt) or ""), color or WHITE
 end
 
@@ -1133,7 +1213,12 @@ local function renderList(list)
         row.action:Show()
         row.action:SetText(L["Set Want to Buy"])
         row.action:Disable()
+      elseif r and r.kind == "item" and r.pick then
+        row.action:Show()
+        row.action:SetText(string.format(L["Buy %d · %s"], 1, GW.Money(r.pick.price)))
+        row.action:SetEnabled(atAH and GW.Purchase.Current() == nil or false)
       elseif r and r.kind == "item" and r.plan.available > 0 then
+        -- found by name only (no listing to buy): Blizzard's list
         row.action:Show()
         row.action:SetText(L["Show"])
         row.action:SetEnabled(atAH or false)
@@ -1234,7 +1319,8 @@ end
 local function copyList(l)
   local c = { name = string.format(L["%s (copy)"], l.name), entries = {} }
   for _, e in ipairs(l.entries) do
-    c.entries[#c.entries + 1] = { name = e.name, itemID = e.itemID, max = e.max, maxPct = e.maxPct, want = e.want }
+    c.entries[#c.entries + 1] =
+      { name = e.name, itemID = e.itemID, variant = e.variant, max = e.max, maxPct = e.maxPct, want = e.want }
   end
   return c
 end
@@ -1245,9 +1331,12 @@ end
 ---@param itemID number|nil
 ---@param name string
 ---@return boolean
-function GW.ListHas(list, itemID, name)
+function GW.ListHas(list, itemID, name, variant)
   for _, x in ipairs(list.entries) do
-    if (itemID and x.itemID == itemID) or x.name:lower() == name:lower() then return true end
+    -- the same item and variant (two variants of one item are different items, #60), or the same name
+    if (itemID and x.itemID == itemID and (x.variant or "") == (variant or "")) or x.name:lower() == name:lower() then
+      return true
+    end
   end
   return false
 end
@@ -1281,7 +1370,9 @@ function GW.AddToList(itemText, maxText, wantText, list)
   end
   local e, err = GW.MakeEntry(itemText, maxText, wantText)
   if not e then return nil, err end
-  if GW.ListHas(list, e.itemID, e.name) then return nil, string.format(L["%s is already in %s."], e.name, list.name) end
+  if GW.ListHas(list, e.itemID, e.name, e.variant) then
+    return nil, string.format(L["%s is already in %s."], e.name, list.name)
+  end
   list.entries[#list.entries + 1] = e
   if render then render() end
   return e, list
@@ -1858,7 +1949,7 @@ local function buildListPage(p)
       local e, r = row.e, row.e and sv.results[row.e]
       if not e then return end
       local b = myBuy()
-      if (b and b.entry == e) or (r and r.kind == "commodity") then
+      if (b and b.entry == e) or (r and (r.kind == "commodity" or r.pick)) then
         buyClick(e)
       else
         showInBuyTab(e)

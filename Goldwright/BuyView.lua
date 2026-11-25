@@ -10,7 +10,7 @@ local UI = GW.UI
 GW.BuyView = {}
 
 local ROWS, ROW_H = 10, 38 -- recent lookups, like the bag list's rows
-local SUGGEST, SUGGEST_H = 5, 24 -- suggestions under the box
+local SUGGEST, SUGGEST_H = 8, 24 -- suggestions under the box (room for a few gear variants, #58)
 local NOTE_H = 30 -- the suggestions' note when Goldwright Data's names are missing (two lines)
 local RECENT_MAX = ROWS -- lookups remembered: as many as the list shows (it doesn't scroll)
 local MENU_ROWS, MENU_H, MENU_W = 12, 20, 220 -- the "+ Shopping List" menu: lists shown, row height, width
@@ -48,6 +48,26 @@ local function itemCount(id)
   return GetItemCount and GetItemCount(id) or 0
 end
 
+--- How many of an item are in your bags; for a gear variant (#58), only that variant.
+---@param id number
+---@param variant string|nil GW.LinkVariant ("12727")
+---@return number
+local function countOf(id, variant)
+  if not variant then return itemCount(id) end
+  local n = 0
+  if C_Container and C_Container.GetContainerNumSlots then
+    for bag = 0, (NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4) do
+      for slot = 1, (C_Container.GetContainerNumSlots(bag) or 0) do
+        local info = C_Container.GetContainerItemInfo(bag, slot)
+        if info and info.itemID == id and GW.LinkVariant(info.hyperlink) == variant then
+          n = n + (info.stackCount or 1)
+        end
+      end
+    end
+  end
+  return n
+end
+
 --- Shows an item in the market card and below.
 ---@param g table
 local function showItem(g)
@@ -59,15 +79,15 @@ local function T() return UI.Tokens() end
 
 --- The cheapest real listing of an item at the house you'd buy at: live when it's the item on the
 --- Buy tab and the auction house just answered, else from Goldwright's data.
----@param id number
+---@param key number|string item id, or "id:bonus" for a gear variant (#58)
 ---@return number|nil copper
-local function lowestOf(id)
+local function lowestOf(key)
   -- the item on screen, searched just now at the auction house: the live cheapest listing
   local st = current()
-  local s = st.mode == "buy" and st.sel and st.sel.itemID == id and st.stats
+  local s = st.mode == "buy" and st.sel and st.sel.key == key and st.stats
   local live = s and s.sorted[s.firstRealIndex]
   if live then return live.price end
-  local d = GW.ItemData(id)
+  local d = GW.ItemData(key)
   local here = d and d[MC.Side()]
   return here and here.mv and here.min or nil
 end
@@ -75,9 +95,9 @@ end
 ---------------------------------------------------------------------------
 -- looking an item up
 ---------------------------------------------------------------------------
---- This character's recent lookups, newest first (item ids): each character shops for its own
---- things (GoldwrightDB.buyRecent["US/Name"]).
----@return number[]
+--- This character's recent lookups, newest first (item ids, "id:bonus" for a gear variant): each
+--- character shops for its own things (GoldwrightDB.buyRecent["US/Name"]).
+---@return (number|string)[]
 local function recent()
   local key = GW.CharKey() or "?"
   GoldwrightDB.buyRecent = type(GoldwrightDB.buyRecent) == "table" and GoldwrightDB.buyRecent or {}
@@ -92,20 +112,26 @@ end
 
 local renderRecent, renderSuggest
 
---- Looks an item up: shows it in the market card and below, and puts it first in Recent.
----@param id number item id
----@param link string|nil item link (its name in the player's language)
-function GW.BuyView.LookUp(id, link)
+--- Looks an item up: shows it in the market card and below, and puts it first in Recent. A gear
+--- variant (#58) is looked up as itself: its own prices, and only its own listings.
+---@param key number|string item id, or "id:bonus" for a gear variant ("4575:12727")
+---@param link string|nil item link (its name in the player's language; a suffixed link picks its variant)
+function GW.BuyView.LookUp(key, link)
+  local id, bonus = GW.ItemNames.SplitKey(key)
   if type(id) ~= "number" then return end
-  local name = (type(link) == "string" and link:match("%[(.-)%]"))
-    or GW.ItemNames.Of(id)
-    or string.format(L["item %d"], id)
-  GW.ItemNames.Note(id, name)
+  local variant = bonus and table.concat(bonus, ":") or nil
+  local fromLink = not variant and GW.LinkVariant(link)
+  if fromLink and fromLink ~= "" then variant = fromLink:gsub("^s", "") end
+  key = variant and (id .. ":" .. variant) or id
+  local linkName = type(link) == "string" and link:match("%[(.-)%]")
+  local baseName = GW.ItemNames.Of(id)
+  local name = linkName or (variant and GW.ItemNames.Variant(key)) or baseName or string.format(L["item %d"], id)
+  if not variant then GW.ItemNames.Note(id, name) end
   local r = recent()
   for i = #r, 1, -1 do
-    if r[i] == id then table.remove(r, i) end
+    if r[i] == key then table.remove(r, i) end
   end
-  table.insert(r, 1, id)
+  table.insert(r, 1, key)
   while #r > RECENT_MAX do
     table.remove(r)
   end
@@ -123,12 +149,15 @@ function GW.BuyView.LookUp(id, link)
   local quality = C_Item and C_Item.GetItemQualityByID and C_Item.GetItemQualityByID(id)
   showItem({
     itemID = id,
-    key = id,
-    packKey = id,
+    key = key,
+    packKey = key,
+    variant = variant, -- the market card leaves out listings of other suffixes (#25)
+    itemKey = variant and GW.ItemNames.AuctionKey(key) or nil, -- the variant's own listings (#58)
     name = name,
+    baseName = baseName or name,
     icon = C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(id),
     quality = quality,
-    count = itemCount(id),
+    count = countOf(id, variant),
   })
   if renderRecent then renderRecent() end
 end
@@ -167,25 +196,30 @@ local function itemRow(parent, w, h, iconSize)
   row:SetScript("OnEnter", function(self)
     if not self.id then return end
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetItemByID(self.id)
+    if self.key ~= self.id then
+      GameTooltip:SetHyperlink(GW.ItemNames.KeyLink(self.key)) -- the variant, with its own stats
+    else
+      GameTooltip:SetItemByID(self.id)
+    end
     GameTooltip:Show()
   end)
   row:SetScript("OnLeave", function() GameTooltip:Hide() end)
   row:SetScript("OnClick", function(self)
-    if self.id then GW.BuyView.LookUp(self.id) end
+    if self.id then GW.BuyView.LookUp(self.key or self.id) end
   end)
   return row
 end
 
 --- Fills a row for an item.
 ---@param row table
----@param id number
+---@param key number|string item id, or "id:bonus" for a gear variant
 ---@param name string
-local function fillRow(row, id, name)
-  row.id = id
+local function fillRow(row, key, name)
+  local id = GW.ItemNames.SplitKey(key)
+  row.id, row.key = id, key
   row.icon:SetTexture(C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(id) or 134400)
   row.name:SetText(name)
-  local low = lowestOf(id)
+  local low = lowestOf(key)
   row.price:SetText(low and GW.Money(low, true) or "–")
   row:Show()
 end
@@ -198,7 +232,7 @@ renderSuggest = function()
   for i, row in ipairs(drop.rows) do
     local m = suggestions[i]
     if m then
-      fillRow(row, m.id, m.name)
+      fillRow(row, m.key or m.id, m.name)
       row.sel:SetShown(i == hl)
     else
       row.id = nil
@@ -221,10 +255,12 @@ renderRecent = function()
   lookupCard.recentCap:SetText(string.format("%s · %d", L["Recent"], #r))
   local sel = sel
   for i, row in ipairs(recentRows) do
-    local id = r[i]
+    local key = r[i]
+    local id = key and GW.ItemNames.SplitKey(key)
     if id then
-      fillRow(row, id, GW.ItemNames.Of(id) or string.format(L["item %d"], id))
-      row.sel:SetShown(sel and sel.itemID == id or false)
+      local name = (key ~= id and GW.ItemNames.Variant(key)) or GW.ItemNames.Of(id)
+      fillRow(row, key, name or string.format(L["item %d"], id))
+      row.sel:SetShown(sel and sel.key == key or false)
     else
       row.id = nil
       row:Hide()
@@ -274,7 +310,7 @@ local function buildLookup()
   end)
   box:SetScript("OnEnterPressed", function()
     local m = suggestions[hl] or suggestions[1]
-    if m then GW.BuyView.LookUp(m.id) end
+    if m then GW.BuyView.LookUp(m.key or m.id) end
   end)
   box:SetScript("OnEscapePressed", function(self)
     if drop:IsShown() then
@@ -505,7 +541,7 @@ function GW.BuyView.Render()
     row.name:SetText((h == side and "• " or "") .. GW.HOUSE_NAMES[h])
     UI.SetColor(row.name, h == side and T().gold or T().muted)
     -- your house at the auction house: the live cheapest listing, the same number as "Lowest now"
-    local p = h == side and g and lowestOf(g.itemID) or (x and x.mv and (x.min or x.mv))
+    local p = h == side and g and lowestOf(g.key) or (x and x.mv and (x.min or x.mv))
     row.price:SetText(p and GW.Money(p, true) or (g and L["none listed"] or "–"))
   end
   GW.BuyView.RenderBuy()
@@ -558,8 +594,20 @@ dropPending = function()
   if p then GW.Purchase.Cancel(p) end
 end
 
---- Redraws the Buy column: away from the auction house everything waits for it; gear is bought
---- in Blizzard's list; commodities with Buy, then Confirm.
+--- The cheapest gear listing others have up for the item on the Buy tab (#61): only that variant
+--- (the search was for its own key), never your own.
+---@param st table current()
+---@return { price: number, auctionID: number }|nil
+local function cheapestGear(st)
+  local pick
+  for _, x in ipairs(st.stats and st.stats.sorted or {}) do
+    if not x.own and x.auctionID and x.price and (not pick or x.price < pick.price) then pick = x end
+  end
+  return pick
+end
+
+--- Redraws the Buy column: away from the auction house everything waits for it; commodities with
+--- Buy, then Confirm; gear the same, one listing at a time (#61).
 function GW.BuyView.RenderBuy()
   if not buyCol then return end
   local st = current()
@@ -578,17 +626,28 @@ function GW.BuyView.RenderBuy()
   else
     buyCol.qty:Disable()
   end
-  buyCol.each:SetText(plan and plan.units > 0 and GW.Money(pending and pending.unit or plan.avg, true) or "–")
-  buyCol.total:SetText(plan and plan.units > 0 and GW.Money(pending and pending.total or plan.total, true) or "–")
+  local pick = live and gear and cheapestGear(st)
+  if gear then
+    -- gear: one listing, its price is both
+    local price = (pending and pending.gear and pending.total) or (pick and pick.price)
+    buyCol.each:SetText(price and GW.Money(price, true) or "–")
+    buyCol.total:SetText(price and GW.Money(price, true) or "–")
+  else
+    buyCol.each:SetText(plan and plan.units > 0 and GW.Money(pending and pending.unit or plan.avg, true) or "–")
+    buyCol.total:SetText(plan and plan.units > 0 and GW.Money(pending and pending.total or plan.total, true) or "–")
+  end
   buyCol.list:SetEnabled(g ~= nil)
   local b = buyCol.button
   if not atAH then
     b:SetText(L["Buy"])
     b:Disable()
     if not pending then buyCol.status:SetText(g and L["Buying needs the auction house."] or "") end
-  elseif gear then
-    b:SetText(L["Show"])
-    b:SetEnabled(g ~= nil)
+  elseif gear and not pending and pick then
+    b:SetText(string.format(L["Buy %d · %s"], 1, GW.Money(pick.price)))
+    b:SetEnabled(GW.Purchase.Current() == nil)
+  elseif gear and not pending then
+    b:SetText(L["Buy"])
+    b:Disable()
   elseif pending and pending.total and not pending.confirming then
     b:SetText(string.format(L["Confirm · %s"], GW.Money(pending.total)))
     b:SetEnabled(GW.Purchase.CanConfirm(pending))
@@ -633,7 +692,7 @@ function GW.BuyView.ToggleListMenu()
   for i, row in ipairs(menu.rows) do
     local l = lists[i]
     if i <= shown then
-      local has = GW.ListHas(l, g.itemID, g.name)
+      local has = GW.ListHas(l, g.itemID, g.name, g.variant)
       row.list = l
       row.name:SetText(has and string.format(L["%s (has it)"], l.name) or l.name)
       UI.SetColor(row.name, has and T().faint or T().text)
@@ -663,30 +722,36 @@ function GW.BuyView.AddToList(list)
   if list == "new" then
     return GW.AskNewList(function(l) GW.BuyView.AddToList(l) end)
   end
-  local link = string.format("|cffffffff|Hitem:%d::::::::::::|h[%s]|h|r", g.itemID, g.name)
+  local link = g.variant and string.format("|cffffffff|H%s|h[%s]|h|r", GW.ItemNames.KeyLink(g.key), g.name)
+    or string.format("|cffffffff|Hitem:%d::::::::::::|h[%s]|h|r", g.itemID, g.name)
   local e, into = GW.AddToList(link, "100%", typedQty() and tostring(typedQty()) or "", list)
   buyCol.status:SetText(e and string.format(L["Added %s to %s."], g.name, into.name) or tostring(into))
 end
 
 --- Buy: asks the auction house for the exact price of the typed quantity; Confirm (the same
---- button, once the price is known) buys. Gear: Show puts it in Blizzard's list to buy there.
+--- button, once the price is known) buys. Gear (#61): Buy picks the cheapest listing of that very
+--- item (its price is fixed), Confirm buys that one listing.
 function GW.BuyView.BuyClick()
   local st = current()
   local g = st.sel
   if not (g and GW.AuctionHouseOpen and GW.AuctionHouseOpen()) then return end
   if InCombatLockdown and InCombatLockdown() then return buyCol.status:SetText(L["Not in combat."]) end
-  if st.source == "item" then -- gear: Blizzard's list, as Shopping does
-    if not GW.CanSearch() then return buyCol.status:SetText(L["Waiting for a search slot: try again in a moment."]) end
-    GW.NoteSearch()
-    C_AuctionHouse.SendBrowseQuery({
-      searchString = g.name,
-      sorts = GW.PriceSorts(),
-      filters = {},
-      itemClassFilters = {},
-    })
-    return buyCol.status:SetText(L["Shown in Blizzard's list on the left: buy it there."])
-  end
   local b = myBuy()
+  if st.source == "item" and not (b and b.gear) then
+    -- gear: pick the cheapest listing; Confirm buys it
+    local pick = cheapestGear(st)
+    if not pick or (b and b.confirming) then return end
+    local p = GW.Purchase.StartGear({
+      itemID = g.itemID,
+      name = g.name,
+      auctionID = pick.auctionID,
+      buyout = pick.price,
+      buyTab = true,
+      onChange = function(...) GW.BuyView.OnPurchase(...) end,
+    })
+    if p then GW.BuyView.RenderBuy() end
+    return
+  end
   if b and b.confirming then return end -- never confirm twice
   if b and b.itemID == g.itemID and b.total then
     if GW.Purchase.Confirm(b) then buyCol.status:SetText(L["Buying…"]) end
@@ -746,7 +811,7 @@ function GW.BuyView.OnPurchase(b, what, reason)
     C_Timer.After(0.5, function()
       local st = current()
       if st.mode == "buy" and st.sel and st.sel.itemID == b.itemID and buyCard:IsVisible() then
-        GW.BuyView.LookUp(b.itemID)
+        GW.BuyView.LookUp(st.sel.key) -- the same variant (#58)
       end
     end)
   elseif what == "failed" then
@@ -815,7 +880,7 @@ function GW.BuyView.AuctionHouseOpened()
   if not (view and view:IsShown()) then return end
   if buyCol and not myBuy() then buyCol.status:SetText("") end -- "Buying needs the auction house." no more
   if sel then
-    sel.count = itemCount(sel.itemID)
+    sel.count = countOf(sel.itemID, sel.variant)
     showItem(sel)
   else
     GW.BuyView.Render()

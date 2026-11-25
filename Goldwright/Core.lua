@@ -505,7 +505,9 @@ function GW.LoadPack()
   GW.otherPacks = {}
   for i = 1, numAddOns() do
     local name = addOnInfo(i)
-    if name and name ~= folder and name:match("^GoldwrightData_") then table.insert(GW.otherPacks, name) end
+    if name and name ~= folder and name:match("^GoldwrightData_") and not name:match("_Gear$") then
+      table.insert(GW.otherPacks, name)
+    end
   end
   return GW.pack
 end
@@ -637,8 +639,54 @@ end
 ---@return number|nil histFrom server time of day 1
 function GW.History(key, side)
   local s = GW.pack and GW.pack.hist and GW.pack.hist[key] and GW.pack.hist[key][side]
-  if not s then return nil end
+  if not s then return GW.GearHistory(key, side) end
   return list36(s), GW.pack.histFrom
+end
+
+-- Gear variants' price history (goldwright-addon #59) is in the pack's own load-on-demand folder
+-- (GoldwrightData_US_Normal_Gear), loaded the first time a gear chart is opened: logging in costs
+-- nothing extra. It keeps one compact string per gear item; an item's string is unpacked the first
+-- time one of its charts is shown.
+local gearTried = {} -- pack key -> true once its gear folder was asked for
+local gearParsed = {} -- "US_Normal:4575" -> variant -> side -> packed prices
+
+--- A gear variant's 30 daily typical prices in one house, from the pack's gear folder.
+---@param key number|string "id:bonus" (anything else has no gear history)
+---@param side string house ("A", "H", "N")
+---@return number[]|nil prices index 1 = the day starting at histFrom; nil entries = no data
+---@return number|nil histFrom server time of day 1
+function GW.GearHistory(key, side)
+  if type(key) ~= "string" then return nil end
+  local id, variant = key:match("^(%d+):(.+)$")
+  local pk = id and GW.pack and GW.pack.key
+  if not pk then return nil end
+  local store = GoldwrightGear and GoldwrightGear[pk]
+  if not store and not gearTried[pk] then
+    gearTried[pk] = true
+    pcall(loadAddOn, "GoldwrightData_" .. pk .. "_Gear")
+    store = GoldwrightGear and GoldwrightGear[pk]
+  end
+  if not store then return nil end
+  local cacheKey = pk .. ":" .. id
+  local parsed = gearParsed[cacheKey]
+  if not parsed then
+    -- "12727 A1e,1f,,1g|H1d;12719 N2a,...": variants by ";", bonus ids, a space, houses by "|"
+    parsed = {}
+    for entry in (store[tonumber(id)] or ""):gmatch("[^;]+") do
+      local v, sides = entry:match("^(%S+) (.+)$")
+      if v then
+        local bySide = {}
+        for part in sides:gmatch("[^|]+") do
+          bySide[part:sub(1, 1)] = part:sub(2)
+        end
+        parsed[v] = bySide
+      end
+    end
+    gearParsed[cacheKey] = parsed
+  end
+  local s = parsed[variant] and parsed[variant][side]
+  if not s then return nil end
+  return list36(s), store.histFrom or GW.pack.histFrom
 end
 
 --- 30 days of sales and supply of an item in one house, on the same days as GW.History. Units per
